@@ -22,7 +22,7 @@ MassiveArchive is a secure, local-first file archiving system that provides end-
 
 **1. Clone the repository**
 ```bash
-git clone [https://github.com/ramdanolii14/MassiveArchive.git](https://github.com/ramdanolii14/MassiveArchive.git)
+git clone https://github.com/ramdanolii14/MassiveArchive.git
 cd MassiveArchive
 ```
 **2. Install dependencies**
