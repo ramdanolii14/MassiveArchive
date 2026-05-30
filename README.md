@@ -20,8 +20,21 @@ MassiveArchive is a secure, local-first file archiving system that provides end-
 
 ## Installation
 
-1. Clone repository locally.
-2. Install dependencies:
-   npm install
-3. Run the application:
-   npm start run
+**1. Clone the repository**
+```bash
+git clone [https://github.com/ramdanolii14/MassiveArchive.git](https://github.com/ramdanolii14/MassiveArchive.git)
+cd MassiveArchive
+```
+**2. Install dependencies**
+```bash
+npm install
+```
+**3. Setup your .env**
+```bash
+SERVER_KEY=your_strong_password_here
+PORT=3001
+```
+**4. Run the application**
+```bash
+npm start run
+```
