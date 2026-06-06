@@ -31,6 +31,8 @@ npm install
 ```
 **3. Setup your .env**
 ```bash
+#make sure to create your .env file
+#in to the same directory with server.js
 SERVER_KEY=your_strong_password_here
 PORT=3001
 ```
