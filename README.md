@@ -42,7 +42,10 @@ PORT=3001
 ```bash
 npm start run
 ```
----
-![Kamisato Ayaka](./imgforreadme/ramdan.jpeg)
+---  
+Peluk Keamanan xD  
+
+![Ssnappy1 Mahiru Shiina Cosplay](./imgforreadme/ssnappy1-mahiru-shiina.jpg)
+
 
 ---
