@@ -2,7 +2,7 @@
 
 MassiveArchive is a secure, local-first file archiving system that provides end-to-end encryption for local data storage. Built using Node.js, Express.js, and React.js, the application handles file serialization and cryptographic processing entirely on the user's local environment, preventing unauthorized data access. It's may not be the fastest archive, but it is safe.  
 
-Please Report to [My Email](mailto:developer@nyanpixel.my.id) Or Go To The Issues Tab And Open It, If You Encounter Any Bug.
+Please Report to [My Email](mailto:developer@nyanpixel.my.id) Or Go To The Issues Tab And Open It, If You Encounter Any Kind Bug.
 
 ## Core Architecture
 - **Cryptographic Processing:** Utilizes AES-256 via Crypto.js.
