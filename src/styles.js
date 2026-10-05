@@ -165,6 +165,15 @@ textarea{resize:vertical;min-height:84px}
 .filters{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:16px}
 .filters select,.filters input{width:auto;padding:8px 12px;font-size:13px}
 .search{width:260px}
+.search-content-row{display:flex;align-items:center;gap:10px}
+.search-content-row .btn{flex-shrink:0}
+.search-snippet{max-width:520px;line-height:1.5}
+.recovery-key{
+  padding:16px;border:1px solid var(--line);border-radius:var(--r2);
+  background:rgba(255,255,255,.75);font-family:ui-monospace,SFMono-Regular,Consolas,monospace;
+  font-size:13px;line-height:1.7;word-break:break-all;user-select:all
+}
+
 .pager{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 18px;border-top:1px solid var(--line)}
 .pager-label{font-size:12.5px;color:var(--ink3);min-width:100px;text-align:center}
 .permission-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
