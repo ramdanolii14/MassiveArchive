@@ -272,7 +272,7 @@ async function readFileList(fl) {
   return ok;
 }
 
-async function encryptFiles(list, passphrase, setProg) {
+async function encryptLegacyFiles(list, passphrase, setProg) {
   const out = [];
   for (let i = 0; i < list.length; i++) {
     setProg(`Mengenkripsi ${i + 1}/${list.length}`);
@@ -284,6 +284,49 @@ async function encryptFiles(list, passphrase, setProg) {
   }
   setProg("");
   return out;
+}
+
+async function encryptEnvelopeFiles(list, archiveKey, setProg) {
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    setProg(`Mengenkripsi ${i + 1}/${list.length}`);
+    const encData = await Crypto.encryptWithKey(list[i].data, archiveKey);
+    out.push({
+      name: list[i].name, type: list[i].type, size: list[i].size,
+      encData, addedAt: list[i].addedAt,
+    });
+  }
+  setProg("");
+  return out;
+}
+
+async function createSecureArchiveFiles(list, session, setProg) {
+  if (!session.publicKey || !session.keyId) {
+    throw new Error("Identitas keamanan akun belum siap. Silakan masuk kembali.");
+  }
+  const archiveKey = Crypto.randomContentKey();
+  const wrappedKey = await Crypto.wrapKey(archiveKey, session.publicKey);
+  const files = await encryptEnvelopeFiles(list, archiveKey, setProg);
+  return {
+    files,
+    keyMode: "envelope-v1",
+    keyEnvelopes: [{
+      keyId: session.keyId,
+      username: session.username,
+      wrappedKey,
+    }],
+  };
+}
+
+async function unlockArchiveKey(arc, session) {
+  if (arc?.keyMode !== "envelope-v1") return null;
+  const envelope = (arc.keyEnvelopes || []).find(e =>
+    e.keyId === session.keyId
+  );
+  if (!envelope || !session.identityPrivateKey) {
+    throw new Error("Anda tidak memiliki kunci akses untuk arsip ini.");
+  }
+  return Crypto.unwrapKey(envelope.wrappedKey, session.identityPrivateKey);
 }
 
 // Tambah arsip
@@ -309,11 +352,11 @@ export function AddForm({ session, onSave, onCancel }) {
     if (!f.date)         { alert("Tanggal wajib diisi."); return; }
     setSaving(true);
     try {
-      const encFiles = await encryptFiles(files, session.passphrase, setEncProg);
+      const secured = await createSecureArchiveFiles(files, session, setEncProg);
       await onSave({
         ...f,
-        tags:  f.tags.split(",").map(t => t.trim()).filter(Boolean),
-        files: encFiles,
+        tags: f.tags.split(",").map(t => t.trim()).filter(Boolean),
+        ...secured,
       });
     } catch (e) {
       alert("Gagal mengenkripsi berkas: " + e.message);
@@ -398,12 +441,26 @@ export function EditForm({ session, arcId, onSave, onCancel }) {
     setSaving(true);
     try {
       const keptFiles = existingFiles.filter((_, i) => !removedIdx.has(i));
-      const encNew    = await encryptFiles(newFiles, session.passphrase, setEncProg);
+      let encNew = [];
+      let nextKeyMode = arc.keyMode;
+      let nextEnvelopes = arc.keyEnvelopes;
+
+      if (newFiles.length) {
+        if (arc.keyMode === "envelope-v1") {
+          const archiveKey = await unlockArchiveKey(arc, session);
+          encNew = await encryptEnvelopeFiles(newFiles, archiveKey, setEncProg);
+        } else {
+          encNew = await encryptLegacyFiles(newFiles, session.passphrase, setEncProg);
+        }
+      }
+
       await IDB.update(arcId, {
         ...arc,
         ...f,
-        tags:      f.tags.split(",").map(t => t.trim()).filter(Boolean),
-        files:     [...keptFiles, ...encNew],
+        tags: f.tags.split(",").map(t => t.trim()).filter(Boolean),
+        keyMode: nextKeyMode,
+        keyEnvelopes: nextEnvelopes,
+        files: [...keptFiles, ...encNew],
         updatedAt: new Date().toISOString(),
       });
       onSave();
