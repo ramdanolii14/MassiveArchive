@@ -16,6 +16,12 @@ export const fmtDT = (iso) =>
 export const genId = (n) =>
   `ARS-${new Date().getFullYear()}-${String(n + 1).padStart(4, "0")}`;
 
+export const fileExtension = (name = "") => {
+  const clean = name.split("?")[0].split("#")[0];
+  const i = clean.lastIndexOf(".");
+  return i > -1 ? clean.slice(i + 1).toLowerCase() : "";
+};
+
 export const fileTypeLabel = (type = "") => {
   if (type.startsWith("image/"))             return "IMG";
   if (type.startsWith("video/"))             return "VID";
