@@ -64,7 +64,7 @@ export function WelcomeScreen({ onLogin }) {
       }
 
       if (!user.hasRecovery) {
-        const recovery = await Crypto.createRecoveryBundle(identity.privateKey);
+        const recovery = await Crypto.createRecoveryBundle(identity.privateKeyBox, pass);
         securityPatch = {
           ...securityPatch,
           recoveryHash: recovery.recoveryHash,
@@ -168,7 +168,7 @@ export function WelcomeScreen({ onLogin }) {
         user.recoveryKeyBox,
         key
       );
-      const privateKeyBox = await Crypto.rewrapIdentity(
+      const privateKeyBox = await Crypto.rewrapRecoveryAsIdentity(
         user.recoveryKeyBox,
         key,
         pass
