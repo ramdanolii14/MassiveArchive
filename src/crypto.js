@@ -98,6 +98,38 @@ export const Crypto = {
     return this.encrypt(plain, newPassphrase);
   },
 
+  async hashRecoveryKey(recoveryKey) {
+    const buf = await window.crypto.subtle.digest(
+      "SHA-256", textEncoder.encode("ARSIP_RECOVERY:" + recoveryKey)
+    );
+    return Array.from(new Uint8Array(buf))
+      .map(b => b.toString(16).padStart(2, "0")).join("");
+  },
+
+  async createRecoveryBundle(privateKey) {
+    const privateJwk = await window.crypto.subtle.exportKey("jwk", privateKey);
+    const bytes = textEncoder.encode(JSON.stringify(privateJwk));
+    const random = window.crypto.getRandomValues(new Uint8Array(32));
+    const recoveryKey = Array.from(random)
+      .map(b => b.toString(16).padStart(2, "0")).join("");
+    const recoveryKeyBox = await this.encrypt(bytes.buffer, recoveryKey);
+    return {
+      recoveryKey,
+      recoveryHash: await this.hashRecoveryKey(recoveryKey),
+      recoveryKeyBox,
+    };
+  },
+
+  async unlockIdentityWithRecovery(recoveryKeyBox, recoveryKey) {
+    const plain = await this.decrypt(recoveryKeyBox, recoveryKey);
+    const privateJwk = JSON.parse(textDecoder.decode(new Uint8Array(plain)));
+    return window.crypto.subtle.importKey(
+      "jwk", privateJwk,
+      { name: "ECDH", namedCurve: "P-256" },
+      false, ["deriveBits"]
+    );
+  },
+
   async publicKeyId(publicJwk) {
     const stable = JSON.stringify({
       crv: publicJwk.crv,

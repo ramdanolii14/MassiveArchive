@@ -13,6 +13,7 @@ const labels = {
   trash: "Memindahkan ke Tempat Sampah",
   restore: "Memulihkan arsip",
   purge: "Menghapus permanen",
+  search: "Mencari isi dokumen",
 };
 
 export function AuditView({ session, toast }) {

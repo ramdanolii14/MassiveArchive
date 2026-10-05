@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { IDB }    from "../database.js";
-import { Crypto } from "../crypto.js";
+import { Crypto, toUint8Array } from "../crypto.js";
 import { fmtSize, fmtDT, fileTypeLabel, fileExtension } from "../utils.js";
 import { EditForm } from "./ArchiveViews.jsx";
 import { Avatar } from "../components/Avatar.jsx";
@@ -13,6 +13,132 @@ const defaultSharedPermissions = {
   edit: false,
   reshare: false,
 };
+
+async function uploadEncryptedPayload(encData, meta, setProg) {
+  const bytes = toUint8Array(encData);
+  const state = await IDB.startUpload({
+    size: bytes.byteLength,
+    name: meta.name,
+    type: meta.type,
+  });
+
+  let offset = state.received || 0;
+  try {
+    while (offset < bytes.byteLength) {
+      const end = Math.min(
+        offset + (state.chunkSize || 4 * 1024 * 1024),
+        bytes.byteLength
+      );
+      const result = await IDB.uploadChunk(
+        state.uploadId,
+        offset,
+        bytes.slice(offset, end)
+      );
+      offset = result.received;
+      setProg?.(`Menyiapkan ulang ${meta.name} ${Math.round((offset / bytes.byteLength) * 100)}%`);
+    }
+    return state.uploadId;
+  } catch (e) {
+    await IDB.cancelUpload(state.uploadId).catch(() => {});
+    throw e;
+  }
+}
+
+async function rotateAfterRevoke(current, revokedUsername, session, users, setProg) {
+  if (current.owner !== session.username) {
+    throw new Error("Hanya pemilik yang dapat merotasi kunci saat mencabut akses.");
+  }
+
+  const remaining = Array.from(
+    new Set([session.username, ...(current.sharedWith || [])])
+  ).filter(username => username !== revokedUsername);
+
+  const byName = new Map(users.map(u => [u.username, u]));
+  byName.set(session.username, {
+    username: session.username,
+    keyId: session.keyId,
+    publicKey: session.publicKey,
+  });
+
+  for (const username of remaining) {
+    const user = byName.get(username);
+    if (!user?.publicKey || !user?.keyId) {
+      throw new Error(
+        `Pengguna "${username}" belum memiliki identitas keamanan sehingga rotasi kunci tidak dapat dilakukan.`
+      );
+    }
+  }
+
+  const archiveKey = Crypto.randomContentKey();
+  const files = [];
+
+  for (let i = 0; i < (current.files || []).length; i++) {
+    const oldFile = current.files[i];
+    setProg?.(`Menyiapkan ulang ${i + 1}/${current.files.length}`);
+    let plain;
+
+    if (current.keyMode === "envelope-v1") {
+      const oldOwnerEnvelope = (current.keyEnvelopes || []).find(
+        e => e.keyId === session.keyId
+      );
+      if (!oldOwnerEnvelope || !session.identityPrivateKey) {
+        throw new Error("Kunci pemilik tidak tersedia untuk rotasi.");
+      }
+      const oldArchiveKey = await Crypto.unwrapKey(
+        oldOwnerEnvelope.wrappedKey,
+        session.identityPrivateKey
+      );
+      const oldCipher = await IDB.fileData(current.id, i, session, "view");
+      plain = await Crypto.decryptWithKey(oldCipher, oldArchiveKey);
+    } else if (oldFile.encData) {
+      plain = await Crypto.decrypt(oldFile.encData, session.passphrase);
+    } else {
+      const oldCipher = await IDB.fileData(current.id, i, session, "view");
+      plain = await Crypto.decrypt(oldCipher, session.passphrase);
+    }
+
+    const encData = await Crypto.encryptWithKey(plain, archiveKey);
+    const uploadId = await uploadEncryptedPayload(encData, oldFile, setProg);
+    files.push({
+      name: oldFile.name,
+      type: oldFile.type,
+      size: oldFile.size,
+      addedAt: oldFile.addedAt || new Date().toISOString(),
+      uploadId,
+    });
+  }
+
+  const oldEnvelopes = new Map(
+    (current.keyEnvelopes || []).map(e => [e.keyId, e])
+  );
+  const keyEnvelopes = [];
+
+  for (const username of remaining) {
+    const user = byName.get(username);
+    const oldEnv = oldEnvelopes.get(user.keyId);
+    const permissions = username === session.username
+      ? { view: true, download: true, edit: true, reshare: true }
+      : {
+          ...defaultSharedPermissions,
+          ...(oldEnv?.permissions || {}),
+        };
+
+    keyEnvelopes.push({
+      keyId: user.keyId,
+      username,
+      wrappedKey: await Crypto.wrapKey(archiveKey, user.publicKey),
+      permissions,
+    });
+  }
+
+  return {
+    files,
+    keyMode: "envelope-v1",
+    keyEnvelopes,
+    sharedWith: remaining.filter(x => x !== session.username),
+    updatedAt: new Date().toISOString(),
+  };
+}
 
 function permissionsFor(arc, session) {
   if (!arc || !session) return {};
@@ -549,31 +675,33 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
   const removeShare = async username => {
     setBusy(true);
     try {
-      const current = await IDB.get(arc.id, session);
+      const current = await IDB.get(arc.id);
       if (!current) throw new Error("Arsip tidak ditemukan.");
 
-      const newShared = (current.sharedWith || []).filter(x => x !== username);
-      const userRecord = users.find(u => u.username === username);
-      const keyId =
-        userRecord?.keyId ||
-        current.keyEnvelopes?.find(e => e.username === username)?.keyId;
+      const allUsers = await IDB.getAllUsers();
+      const progress = value => {
+        if (value) setBusy(value);
+      };
 
-      const patch = { sharedWith: newShared };
-      if (current.keyMode === "envelope-v1") {
-        patch.keyEnvelopes = keyId
-          ? (current.keyEnvelopes || []).filter(e => e.keyId !== keyId)
-          : (current.keyEnvelopes || []);
-      }
+      const rotated = await rotateAfterRevoke(
+        current,
+        username,
+        session,
+        allUsers,
+        progress
+      );
 
-      await IDB.update(current.id, patch, session);
+      await IDB.update(current.id, rotated);
       await logAudit(session, "revoke", {
         archiveId: arc.id,
         title: arc.title,
         recipient: username,
+        keyRotation: true,
       });
-      setSharedWith(newShared);
+
+      setSharedWith(rotated.sharedWith);
       await onReload();
-      toast("Akses " + username + " dicabut.");
+      toast(`Akses ${username} dicabut dan kunci arsip dirotasi.`);
     } catch (e) {
       toast(e.message || "Gagal mencabut akses.", "err");
     }
