@@ -330,6 +330,17 @@ app.patch("/api/users/:username", patchUser);
 // yang bermasalah meneruskan method PATCH.
 app.post("/api/users/:username/update", patchUser);
 
+// Endpoint profil tanpa username di URL. Ini menjadi jalur utama frontend
+// untuk menghindari masalah routing/proxy terhadap parameter path atau PATCH.
+app.post("/api/profile", (req, res) => {
+  const username = typeof req.body?.username === "string"
+    ? req.body.username.trim().toLowerCase()
+    : "";
+  if (!username) return res.status(400).json({ error: "Username wajib diisi" });
+  req.params.username = username;
+  return patchUser(req, res);
+});
+
 // ════════════════════════════════════════════════════════════════
 // ROUTES — Storage
 // ════════════════════════════════════════════════════════════════
