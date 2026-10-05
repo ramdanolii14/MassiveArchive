@@ -269,6 +269,12 @@ iframe.pdf-frame{width:100%;height:64vh;border:none;border-radius:10px}
 .dash-head{display:flex;align-items:center;gap:14px;margin:0 2px 20px}
 .dash-name{font-size:17px;font-weight:600;letter-spacing:-.01em}
 .profile-head{display:flex;align-items:center;gap:20px}
+.owner-cell{display:flex;align-items:center;gap:9px;min-width:0}
+.owner-cell .avatar{width:34px;height:34px;font-size:13px}
+.archive-uploader{display:flex;align-items:center;gap:10px;margin:10px 0 14px}
+.archive-uploader .avatar{width:40px;height:40px;font-size:14px}
+.archive-uploader-label{font-size:11px;color:var(--ink3);line-height:1.2}
+.archive-uploader-name{font-size:13.5px;font-weight:600;color:var(--ink2);line-height:1.35}
 .capsule{display:flex;height:14px;border-radius:999px;overflow:hidden;background:rgba(28,31,36,.08)}
 .cap-db{background:var(--accent)}
 .cap-other{background:rgba(28,31,36,.28)}
