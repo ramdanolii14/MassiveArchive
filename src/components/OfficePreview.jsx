@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fileExtension } from "../utils.js";
 
-export function OfficePreview({ blob }) {
+export function OfficePreview({ blob, fileName }) {
   const ref = useRef(null);
   const viewerRef = useRef(null);
   const [busy, setBusy] = useState(true);
@@ -15,7 +15,7 @@ export function OfficePreview({ blob }) {
     if (ref.current) ref.current.innerHTML = "";
 
     const run = async () => {
-      const ext = fileExtension(blob?.name || "");
+      const ext = fileExtension(fileName || "");
       try {
         if (!blob || !ref.current) return;
 
@@ -62,7 +62,7 @@ export function OfficePreview({ blob }) {
       try { viewerRef.current?.destroy?.(); } catch {}
       if (ref.current) ref.current.innerHTML = "";
     };
-  }, [blob]);
+  }, [blob, fileName]);
 
   if (busy) return <div className="office-state">Memuat pratinjau...</div>;
   if (error) return <div className="note">{error}</div>;
