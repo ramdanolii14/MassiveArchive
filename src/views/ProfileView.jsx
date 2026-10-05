@@ -83,7 +83,7 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
       // diproses dari shard-nya sendiri sehingga perubahan kata kunci
       // tidak lagi memuat satu database besar ke memori sekaligus.
       const metas = await IDB.listMeta();
-      const mine  = metas.filter(a => a.owner === session.username && a.fileCount > 0);
+      const mine  = metas.filter(a => a.owner === session.username && a.files?.length > 0);
       const total = mine.reduce((s, a) => s + (a.fileCount || 0), 0);
       let n = 0;
       for (const meta of mine) {
