@@ -3,29 +3,41 @@ import { IDB }         from "../database.js";
 import { Crypto }      from "../crypto.js";
 import { passStrength } from "../utils.js";
 
+function sessionFromUser(user, passphrase, identityPrivateKey) {
+  return {
+    username: user.username,
+    passphrase,
+    publicKey: user.publicKey,
+    keyId: user.keyId,
+    identityPrivateKey,
+  };
+}
+
 export function WelcomeScreen({ onLogin }) {
-  const [tab,      setTab]      = useState("login");
+  const [tab, setTab] = useState("login");
   const [username, setUsername] = useState("");
-  const [pass,     setPass]     = useState("");
-  const [pass2,    setPass2]    = useState("");
-  const [showP,    setShowP]    = useState(false);
-  const [err,      setErr]      = useState("");
-  const [busy,     setBusy]     = useState(false);
+  const [pass, setPass] = useState("");
+  const [pass2, setPass2] = useState("");
+  const [recoveryKey, setRecoveryKey] = useState("");
+  const [showP, setShowP] = useState(false);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [recoveryNotice, setRecoveryNotice] = useState("");
 
   const strength = passStrength(pass);
 
   const handleLogin = async () => {
     setErr("");
-    if (!username.trim() || !pass) { setErr("Isi username dan kata kunci."); return; }
+    if (!username.trim() || !pass) {
+      setErr("Isi username dan kata kunci.");
+      return;
+    }
+
     setBusy(true);
     try {
-      const user = await IDB.getUser(username.trim().toLowerCase());
-      if (!user) { setErr("Username tidak ditemukan."); setBusy(false); return; }
       const hash = await Crypto.hashPass(pass);
-      if (hash !== user.passHash) { setErr("Kata kunci salah."); setBusy(false); return; }
+      const user = await IDB.login(username.trim().toLowerCase(), hash);
 
-      // Akun lama yang belum memiliki identitas kriptografi akan diprovisikan
-      // sekali saat login. Setelah itu public/private key tetap sama.
       let identity;
       try {
         if (user.publicKey && user.privateKeyBox && user.keyId) {
@@ -49,52 +61,155 @@ export function WelcomeScreen({ onLogin }) {
         return;
       }
 
-      onLogin({
-        username: user.username,
-        passphrase: pass,
-        publicKey: identity.publicKey,
-        keyId: identity.keyId,
-        identityPrivateKey: identity.privateKey,
-      });
-    } catch { setErr("Terjadi kesalahan sistem."); }
+      onLogin(sessionFromUser(user, pass, identity.privateKey));
+    } catch (e) {
+      setErr(e.message || "Username atau kata kunci salah.");
+    }
     setBusy(false);
   };
 
   const handleRegister = async () => {
     setErr("");
-    if (!username.trim()) { setErr("Username wajib diisi."); return; }
-    if (!/^[a-z0-9_]{3,24}$/.test(username.trim().toLowerCase())) {
-      setErr("Username 3 sampai 24 karakter: huruf kecil, angka, atau garis bawah."); return;
+    if (!username.trim()) {
+      setErr("Username wajib diisi.");
+      return;
     }
-    if (pass.length < 8) { setErr("Kata kunci minimal 8 karakter."); return; }
-    if (pass !== pass2)  { setErr("Konfirmasi kata kunci tidak cocok."); return; }
+    const nextUsername = username.trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,24}$/.test(nextUsername)) {
+      setErr("Username 3 sampai 24 karakter: huruf kecil, angka, atau garis bawah.");
+      return;
+    }
+    if (pass.length < 8) {
+      setErr("Kata kunci minimal 8 karakter.");
+      return;
+    }
+    if (pass !== pass2) {
+      setErr("Konfirmasi kata kunci tidak cocok.");
+      return;
+    }
+
     setBusy(true);
     try {
-      const exists = await IDB.getUser(username.trim().toLowerCase());
-      if (exists) { setErr("Username sudah digunakan."); setBusy(false); return; }
       const passHash = await Crypto.hashPass(pass);
       const identity = await Crypto.createIdentity(pass);
-      await IDB.addUser({
-        username:  username.trim().toLowerCase(),
+      const recovery = await Crypto.createRecoveryBundle(identity.privateKey);
+
+      const user = await IDB.register({
+        username: nextUsername,
         passHash,
         publicKey: identity.publicKey,
         keyId: identity.keyId,
         privateKeyBox: identity.privateKeyBox,
+        recoveryHash: recovery.recoveryHash,
+        recoveryKeyBox: recovery.recoveryKeyBox,
         createdAt: new Date().toISOString(),
       });
-      onLogin({
-        username: username.trim().toLowerCase(),
-        passphrase: pass,
-        publicKey: identity.publicKey,
-        keyId: identity.keyId,
-        identityPrivateKey: identity.privateKey,
-      });
-    } catch { setErr("Gagal membuat akun."); }
+
+      setRecoveryNotice(recovery.recoveryKey);
+      setUsername(user.username);
+      setRecoveryKey(recovery.recoveryKey);
+      window.__massiveArchivePendingSession = sessionFromUser(
+        user,
+        pass,
+        identity.privateKey
+      );
+    } catch (e) {
+      setErr(e.message || "Gagal membuat akun.");
+    }
     setBusy(false);
   };
 
-  const submit = () => (tab === "login" ? handleLogin() : handleRegister());
+  const finishRegistration = () => {
+    const pending = window.__massiveArchivePendingSession;
+    delete window.__massiveArchivePendingSession;
+    setRecoveryNotice("");
+    if (pending) onLogin(pending);
+  };
+
+  const handleRecover = async () => {
+    setErr("");
+    const name = username.trim().toLowerCase();
+    const key = recoveryKey.trim().toLowerCase();
+    if (!name || !key) {
+      setErr("Isi username dan Recovery Key.");
+      return;
+    }
+    if (!/^[a-f0-9]{64}$/.test(key)) {
+      setErr("Recovery Key tidak valid.");
+      return;
+    }
+    if (pass.length < 8) {
+      setErr("Kata kunci baru minimal 8 karakter.");
+      return;
+    }
+    if (pass !== pass2) {
+      setErr("Konfirmasi kata kunci tidak cocok.");
+      return;
+    }
+
+    setBusy(true);
+    try {
+      const recoveryHash = await Crypto.hashRecoveryKey(key);
+      const user = await IDB.recover(name, recoveryHash);
+      const identityPrivateKey = await Crypto.unlockIdentityWithRecovery(
+        user.recoveryKeyBox,
+        key
+      );
+      const privateKeyBox = await Crypto.rewrapIdentity(
+        user.recoveryKeyBox,
+        key,
+        pass
+      );
+
+      await IDB.updateUser(user.username, {
+        passHash: await Crypto.hashPass(pass),
+        privateKeyBox,
+      });
+
+      onLogin(sessionFromUser(user, pass, identityPrivateKey));
+    } catch (e) {
+      setErr(e.message || "Recovery gagal. Periksa Recovery Key.");
+    }
+    setBusy(false);
+  };
+
+  const switchTab = next => {
+    setTab(next);
+    setErr("");
+    setRecoveryNotice("");
+    setPass("");
+    setPass2("");
+    setRecoveryKey("");
+  };
+
+  const submit = () => {
+    if (tab === "login") return handleLogin();
+    if (tab === "register") return handleRegister();
+    return handleRecover();
+  };
+
   const onEnter = e => e.key === "Enter" && submit();
+
+  if (recoveryNotice) {
+    return (
+      <div className="auth-wrap">
+        <div className="auth-card">
+          <div className="auth-title">Simpan Recovery Key</div>
+          <div className="auth-sub">
+            Recovery Key diperlukan untuk memulihkan akun ketika kata kunci lupa.
+          </div>
+          <div className="recovery-key">{recoveryNotice}</div>
+          <div className="note" style={{ marginTop: 16 }}>
+            Simpan Recovery Key di tempat pribadi yang aman. Recovery Key tidak dapat ditampilkan kembali oleh MassiveArchive.
+          </div>
+          <button className="btn btn-p" style={{ width: "100%", marginTop: 18 }}
+            onClick={finishRegistration}>
+            Saya sudah menyimpannya
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="auth-wrap">
@@ -104,9 +219,11 @@ export function WelcomeScreen({ onLogin }) {
 
         <div className="seg">
           <button className={tab === "login" ? "act" : ""}
-            onClick={() => { setTab("login"); setErr(""); }}>Masuk</button>
+            onClick={() => switchTab("login")}>Masuk</button>
           <button className={tab === "register" ? "act" : ""}
-            onClick={() => { setTab("register"); setErr(""); }}>Daftar</button>
+            onClick={() => switchTab("register")}>Daftar</button>
+          <button className={tab === "recover" ? "act" : ""}
+            onClick={() => switchTab("recover")}>Pulihkan</button>
         </div>
 
         <div className="auth-fields">
@@ -115,25 +232,43 @@ export function WelcomeScreen({ onLogin }) {
             <input value={username} onChange={e => setUsername(e.target.value)}
               onKeyDown={onEnter} autoComplete="username" />
           </div>
-          <div className="field">
-            <label>Kata kunci</label>
-            <div className="pw">
-              <input type={showP ? "text" : "password"} value={pass}
-                onChange={e => setPass(e.target.value)} onKeyDown={onEnter}
-                autoComplete={tab === "login" ? "current-password" : "new-password"} />
-              <button type="button" onClick={() => setShowP(p => !p)}>
-                {showP ? "Sembunyi" : "Lihat"}
-              </button>
-            </div>
-            {tab === "register" && pass && (
-              <div className="strength">
-                <div style={{ width: `${(strength.score / 5) * 100}%` }} />
-              </div>
-            )}
-          </div>
-          {tab === "register" && (
+
+          {tab === "recover" && (
             <div className="field">
-              <label>Ulangi kata kunci</label>
+              <label>Recovery Key</label>
+              <input value={recoveryKey} onChange={e => setRecoveryKey(e.target.value)}
+                onKeyDown={onEnter} autoComplete="off" />
+            </div>
+          )}
+
+          {tab !== "recover" ? (
+            <div className="field">
+              <label>Kata kunci</label>
+              <div className="pw">
+                <input type={showP ? "text" : "password"} value={pass}
+                  onChange={e => setPass(e.target.value)} onKeyDown={onEnter}
+                  autoComplete={tab === "login" ? "current-password" : "new-password"} />
+                <button type="button" onClick={() => setShowP(p => !p)}>
+                  {showP ? "Sembunyi" : "Lihat"}
+                </button>
+              </div>
+              {tab === "register" && pass && (
+                <div className="strength">
+                  <div style={{ width: `${(strength.score / 5) * 100}%` }} />
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="field">
+              <label>Kata kunci baru</label>
+              <input type="password" value={pass} onChange={e => setPass(e.target.value)}
+                onKeyDown={onEnter} autoComplete="new-password" />
+            </div>
+          )}
+
+          {(tab === "register" || tab === "recover") && (
+            <div className="field">
+              <label>Ulangi kata kunci {tab === "recover" ? "baru" : ""}</label>
               <input type={showP ? "text" : "password"} value={pass2}
                 onChange={e => setPass2(e.target.value)} onKeyDown={onEnter}
                 autoComplete="new-password" />
@@ -145,11 +280,20 @@ export function WelcomeScreen({ onLogin }) {
 
         <button className="btn btn-p" style={{ width: "100%", marginTop: 20 }}
           onClick={submit} disabled={busy}>
-          {busy ? "Memproses..." : tab === "login" ? "Masuk" : "Buat akun"}
+          {busy ? "Memproses..." :
+            tab === "login" ? "Masuk" :
+            tab === "register" ? "Buat akun" : "Pulihkan akun"}
         </button>
 
         {tab === "register" && (
-          <div className="hint">Kata kunci tidak bisa dipulihkan jika lupa.</div>
+          <div className="hint">
+            Recovery Key akan dibuat sekali setelah akun berhasil dibuat.
+          </div>
+        )}
+        {tab === "recover" && (
+          <div className="hint">
+            Recovery Key digunakan untuk membuat kata kunci baru tanpa kata kunci lama.
+          </div>
         )}
       </div>
     </div>
