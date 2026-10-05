@@ -485,7 +485,10 @@ app.patch("/api/archives/:id", (req, res) => {
 
   const actor = String(req.body?.actor || "").trim().toLowerCase();
   const actorKeyId = String(req.body?.actorKeyId || "");
-  const action = ("keyEnvelopes" in req.body || "sharedWith" in req.body) ? "reshare" : "edit";
+  const shareChanged =
+    ("keyEnvelopes" in req.body && JSON.stringify(req.body.keyEnvelopes) !== JSON.stringify(current.keyEnvelopes)) ||
+    ("sharedWith" in req.body && JSON.stringify(req.body.sharedWith) !== JSON.stringify(current.sharedWith));
+  const action = shareChanged ? "reshare" : "edit";
   if (!canChangeArchive(current, actorKeyId, actor, action)) {
     return res.status(403).json({ error: "Anda tidak memiliki izin untuk mengubah arsip ini." });
   }
