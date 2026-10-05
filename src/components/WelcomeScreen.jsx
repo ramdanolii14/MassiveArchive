@@ -109,7 +109,7 @@ export function WelcomeScreen({ onLogin }) {
     try {
       const passHash = await Crypto.hashPass(pass);
       const identity = await Crypto.createIdentity(pass);
-      const recovery = await Crypto.createRecoveryBundle(identity.privateKey);
+      const recovery = await Crypto.createRecoveryBundle(identity.privateKeyBox, pass);
 
       const user = await IDB.register({
         username: nextUsername,
