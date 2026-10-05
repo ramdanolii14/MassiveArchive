@@ -290,7 +290,7 @@ app.post("/api/auth/register", (req, res) => {
   if (users.some(u => u.username === username)) {
     return res.status(409).json({ error: "Username sudah digunakan." });
   }
-  const required = ["passHash", "publicKey", "keyId", "privateKeyBox"];
+  const required = ["passHash", "publicKey", "keyId", "privateKeyBox", "recoveryHash", "recoveryKeyBox"];
   if (required.some(k => !req.body?.[k])) {
     return res.status(400).json({ error: "Data akun keamanan tidak lengkap." });
   }
@@ -459,13 +459,14 @@ function removeUpload(uploadId) {
   }
 }
 
-function materializeUploads(files, archiveId) {
+function materializeUploads(files, archiveId, userId) {
   const out = [];
   for (let i = 0; i < (files || []).length; i++) {
     const f = files[i];
     if (!f?.uploadId) { out.push(f); continue; }
     const state = readUpload(f.uploadId);
     if (!state) throw new Error("Upload tidak ditemukan atau sudah kedaluwarsa.");
+    if (state.userId !== userId) throw new Error("Upload tidak dimiliki oleh sesi ini.");
     if (state.received !== state.size) {
       throw new Error("Upload \"" + state.name + "\" belum selesai (" + state.received + "/" + state.size + " bytes).");
     }
@@ -495,6 +496,7 @@ app.post("/api/uploads", (req, res) => {
     type: String(req.body?.type || "application/octet-stream"),
     size,
     received: 0,
+    userId: req.user.id,
     createdAt: new Date().toISOString(),
   });
   res.json({ uploadId, size, received: 0, chunkSize: UPLOAD_CHUNK });
@@ -503,6 +505,7 @@ app.post("/api/uploads", (req, res) => {
 app.get("/api/uploads/:id", (req, res) => {
   const state = readUpload(req.params.id);
   if (!state) return res.status(404).json({ error: "Upload tidak ditemukan." });
+  if (state.userId !== req.user.id) return res.status(403).json({ error: "Upload bukan milik sesi ini." });
   res.json(state);
 });
 
@@ -511,6 +514,7 @@ app.put("/api/uploads/:id",
   (req, res) => {
     const state = readUpload(req.params.id);
     if (!state) return res.status(404).json({ error: "Upload tidak ditemukan." });
+    if (state.userId !== req.user.id) return res.status(403).json({ error: "Upload bukan milik sesi ini." });
     const offset = Number(req.get("X-Upload-Offset"));
     const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
     if (!Number.isInteger(offset) || offset !== state.received) {
@@ -531,6 +535,7 @@ app.put("/api/uploads/:id",
 app.delete("/api/uploads/:id", (req, res) => {
   const state = readUpload(req.params.id);
   if (!state) return res.json({ ok: true });
+  if (state.userId !== req.user.id) return res.status(403).json({ error: "Upload bukan milik sesi ini." });
   removeUpload(state.uploadId);
   res.json({ ok: true });
 });
@@ -550,7 +555,10 @@ app.get("/api/archives", (req, res) => {
   }
 
   if (req.query.meta) return res.json(index);
-  res.json(index.map(a => readArchive(a.id)).filter(Boolean));
+  const accessible = index.filter(a =>
+    a.owner === req.user.username || (a.sharedWith || []).includes(req.user.username)
+  );
+  res.json(accessible.map(a => readArchive(a.id)).filter(Boolean));
 });
 
 app.get("/api/archives/:id", (req, res) => {
@@ -610,7 +618,7 @@ app.post("/api/archives", (req, res) => {
   item.owner = actor;
   if (item.deletedAt) delete item.deletedAt;
   if (Array.isArray(item.files)) {
-    try { item.files = materializeUploads(item.files, item.id); }
+    try { item.files = materializeUploads(item.files, item.id, req.user.id); }
     catch (e) { return res.status(400).json({ error: e.message }); }
   }
   if (actor && item.owner && actor !== item.owner) {
@@ -642,7 +650,7 @@ app.patch("/api/archives/:id", (req, res) => {
   delete body.actorKeyId;
   const item = { ...current, ...body, id };
   if (Array.isArray(item.files)) {
-    try { item.files = materializeUploads(item.files, id); }
+    try { item.files = materializeUploads(item.files, id, req.user.id); }
     catch (e) { return res.status(400).json({ error: e.message }); }
   }
   cleanupRemovedPayloads(current, item);
@@ -670,7 +678,7 @@ app.post("/api/archives/:id/restore", (req, res) => {
   const id = parseInt(req.params.id, 10);
   const current = archivesMeta().find(a => a.id === id);
   if (!current) return res.status(404).json({ error: "Tidak ditemukan" });
-  const actor = String(req.body?.username || "").trim().toLowerCase();
+  const actor = req.user.username;
   if (current.owner !== actor) return res.status(403).json({ error: "Hanya pemilik yang dapat memulihkan arsip." });
   const patch = { deletedAt: null, deletedBy: null, updatedAt: new Date().toISOString() };
   const full = readArchive(id);
@@ -683,7 +691,7 @@ app.delete("/api/archives/:id/permanent", (req, res) => {
   const id = parseInt(req.params.id, 10);
   const current = archivesMeta().find(a => a.id === id);
   if (!current) return res.status(404).json({ error: "Tidak ditemukan" });
-  const actor = String(req.body?.username || "").trim().toLowerCase();
+  const actor = req.user.username;
   if (current.owner !== actor) return res.status(403).json({ error: "Hanya pemilik yang dapat menghapus permanen." });
   const full = readArchive(id);
   for (const f of full?.files || []) if (f.payloadRef) removePayload(f.payloadRef);
