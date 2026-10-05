@@ -62,7 +62,7 @@ export function WelcomeScreen({ onLogin }) {
         return;
       }
 
-      if (!user.recoveryHash || !user.recoveryKeyBox) {
+      if (!user.hasRecovery) {
         const recovery = await Crypto.createRecoveryBundle(identity.privateKey);
         await IDB.updateUser(user.username, {
           recoveryHash: recovery.recoveryHash,
