@@ -25,9 +25,13 @@ if (!SERVER_KEY || SERVER_KEY.length < 8) {
   );
   process.exit(1);
 }
-const DB_DIR     = path.join(__dirname, "database");
+const DB_DIR          = path.join(__dirname, "database");
+const ARCHIVE_DIR     = path.join(DB_DIR, "archives");
+const ARCHIVE_INDEX   = path.join(DB_DIR, "archives.index.arsip");
+const LEGACY_ARCHIVES = path.join(DB_DIR, "archives.arsip");
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
+if (!fs.existsSync(ARCHIVE_DIR)) fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
 
 // ════════════════════════════════════════════════════════════════
 // ENKRIPSI DISK — AES-256-GCM
@@ -68,23 +72,122 @@ function readCol(name) {
   }
 }
 
-// Cache metadata arsip (tanpa data berkas terenkripsi) agar daftar cepat dimuat
+// ── Penyimpanan arsip terpecah (satu arsip logis = satu file shard) ──
+// Index hanya berisi metadata sehingga perpindahan halaman tidak perlu
+// membaca seluruh payload terenkripsi.
 let metaCache = null;
 
-function archivesMeta() {
-  if (!metaCache) {
-    metaCache = readCol("archives").map(a => ({
-      ...a,
-      files: (a.files || []).map(({ encData, ...f }) => f),
-    }));
+function archiveShardPath(id) {
+  return path.join(ARCHIVE_DIR, `archive-${String(id).padStart(8, "0")}.arsip`);
+}
+
+function archiveMetaOf(arc) {
+  return {
+    ...arc,
+    files: (arc.files || []).map(({ encData, ...f }) => f),
+  };
+}
+
+function readArchiveIndex() {
+  if (!fs.existsSync(ARCHIVE_INDEX)) return [];
+  try {
+    return JSON.parse(decryptFromDisk(fs.readFileSync(ARCHIVE_INDEX)));
+  } catch (e) {
+    console.error("[DB] Indeks arsip rusak:", e.message);
+    return [];
   }
+}
+
+function writeArchiveIndex(index) {
+  fs.writeFileSync(ARCHIVE_INDEX, encryptToDisk(JSON.stringify(index)));
+  metaCache = index;
+}
+
+function readArchive(id) {
+  const file = archiveShardPath(id);
+  if (!fs.existsSync(file)) return null;
+  try {
+    const arc = JSON.parse(decryptFromDisk(fs.readFileSync(file)));
+    const meta = archivesMeta().find(a => a.id === id);
+    // Metadata pada index menjadi sumber kebenaran untuk owner/sharedWith
+    // sehingga rename username tidak perlu menulis ulang semua payload.
+    if (meta) {
+      arc.owner = meta.owner;
+      arc.sharedWith = meta.sharedWith || [];
+    }
+    return arc;
+  } catch (e) {
+    console.error(`[DB] Gagal baca shard arsip ${id}:`, e.message);
+    return null;
+  }
+}
+
+function writeArchive(arc) {
+  fs.writeFileSync(archiveShardPath(arc.id), encryptToDisk(JSON.stringify(arc)));
+}
+
+function removeArchive(id) {
+  const file = archiveShardPath(id);
+  if (fs.existsSync(file)) fs.unlinkSync(file);
+}
+
+function archivesMeta() {
+  ensureArchiveStore();
+  if (!metaCache) metaCache = readArchiveIndex();
   return metaCache;
+}
+
+function upsertArchiveMeta(arc) {
+  const index = archivesMeta().slice();
+  const meta = archiveMetaOf(arc);
+  const idx = index.findIndex(a => a.id === arc.id);
+  if (idx >= 0) index[idx] = meta;
+  else index.push(meta);
+  index.sort((a, b) => (a.id || 0) - (b.id || 0));
+  writeArchiveIndex(index);
+}
+
+function updateArchiveMeta(id, patch) {
+  const index = archivesMeta().slice();
+  const idx = index.findIndex(a => a.id === id);
+  if (idx < 0) return false;
+  index[idx] = { ...index[idx], ...patch, id };
+  // Jangan pernah membiarkan payload terenkripsi masuk ke index.
+  if (Array.isArray(index[idx].files)) {
+    index[idx].files = index[idx].files.map(({ encData, ...f }) => f);
+  }
+  writeArchiveIndex(index);
+  return true;
+}
+
+function ensureArchiveStore() {
+  if (fs.existsSync(ARCHIVE_INDEX)) return;
+
+  // Migrasi satu kali dari format lama: database/archives.arsip
+  // menjadi database/archives/archive-XXXXXXXX.arsip + indeks metadata.
+  if (fs.existsSync(LEGACY_ARCHIVES)) {
+    const legacy = readCol("archives");
+    const index = [];
+    for (const arc of legacy) {
+      writeArchive(arc);
+      index.push(archiveMetaOf(arc));
+    }
+    writeArchiveIndex(index);
+
+    // Backup format lama agar data asli tetap tersedia bila dibutuhkan.
+    const backup = path.join(DB_DIR, "archives.legacy.arsip");
+    if (!fs.existsSync(backup)) {
+      try { fs.renameSync(LEGACY_ARCHIVES, backup); } catch { /* backup opsional */ }
+    }
+    return;
+  }
+
+  writeArchiveIndex([]);
 }
 
 function writeCol(name, data) {
   const file = path.join(DB_DIR, `${name}.arsip`);
   fs.writeFileSync(file, encryptToDisk(JSON.stringify(data)));
-  if (name === "archives") metaCache = null;
 }
 
 function nextId(col) {
@@ -97,49 +200,55 @@ function nextId(col) {
 // ════════════════════════════════════════════════════════════════
 
 app.get("/api/archives", (req, res) => {
-  // ?meta=1 : tanpa data berkas terenkripsi
-  if (req.query.meta) return res.json(archivesMeta());
-  res.json(readCol("archives"));
+  const index = archivesMeta();
+  if (req.query.meta) return res.json(index);
+  // Tetap dukung kontrak lama /api/archives untuk kompatibilitas.
+  res.json(index.map(a => readArchive(a.id)).filter(Boolean));
 });
 
 app.get("/api/archives/:id", (req, res) => {
-  const id  = parseInt(req.params.id);
-  const src = req.query.meta ? archivesMeta() : readCol("archives");
-  const arc = src.find(a => a.id === id);
+  const id = parseInt(req.params.id);
+  const arc = req.query.meta ? archivesMeta().find(a => a.id === id) : readArchive(id);
   if (!arc) return res.status(404).json({ error: "Tidak ditemukan" });
   res.json(arc);
 });
 
-// Data terenkripsi satu berkas, hanya diambil saat berkas dibuka
+// Hanya mengambil satu payload berkas; tidak membaca arsip lain.
 app.get("/api/archives/:id/files/:idx", (req, res) => {
-  const id  = parseInt(req.params.id);
-  const arc = readCol("archives").find(a => a.id === id);
-  const f   = arc?.files?.[parseInt(req.params.idx)];
-  if (!f) return res.status(404).json({ error: "Tidak ditemukan" });
+  const id = parseInt(req.params.id);
+  const idx = parseInt(req.params.idx);
+  const arc = readArchive(id);
+  const f = arc?.files?.[idx];
+  if (!f?.encData) return res.status(404).json({ error: "Tidak ditemukan" });
   res.json({ encData: f.encData });
 });
 
 app.post("/api/archives", (req, res) => {
-  const col  = readCol("archives");
-  const item = { ...req.body, id: nextId(col) };
-  col.push(item);
-  writeCol("archives", col);
+  const index = archivesMeta();
+  const item = { ...req.body, id: nextId(index) };
+  writeArchive(item);
+  upsertArchiveMeta(item);
   res.json(item);
 });
 
 app.patch("/api/archives/:id", (req, res) => {
-  const id  = parseInt(req.params.id);
-  const col = readCol("archives");
-  const idx = col.findIndex(a => a.id === id);
-  if (idx === -1) return res.status(404).json({ error: "Tidak ditemukan" });
-  col[idx] = { ...col[idx], ...req.body };
-  writeCol("archives", col);
-  res.json(col[idx]);
+  const id = parseInt(req.params.id);
+  const current = readArchive(id);
+  if (!current) return res.status(404).json({ error: "Tidak ditemukan" });
+
+  const item = { ...current, ...req.body, id };
+  writeArchive(item);
+  upsertArchiveMeta(item);
+  res.json(item);
 });
 
 app.delete("/api/archives/:id", (req, res) => {
   const id = parseInt(req.params.id);
-  writeCol("archives", readCol("archives").filter(a => a.id !== id));
+  const current = archivesMeta().find(a => a.id === id);
+  if (!current) return res.status(404).json({ error: "Tidak ditemukan" });
+
+  removeArchive(id);
+  writeArchiveIndex(archivesMeta().filter(a => a.id !== id));
   res.json({ ok: true });
 });
 
@@ -170,13 +279,16 @@ app.post("/api/users", (req, res) => {
   res.json(item);
 });
 
-app.patch("/api/users/:username", (req, res) => {
+function patchUser(req, res) {
   const users = readCol("users");
-  const idx   = users.findIndex(u => u.username === req.params.username);
-  if (idx === -1) return res.status(404).json({ error: "Tidak ditemukan" });
+  const username = decodeURIComponent(req.params.username || "");
+  const idx = users.findIndex(u => u.username === username);
+  if (idx === -1) return res.status(404).json({ error: "Pengguna tidak ditemukan" });
 
   const oldName = users[idx].username;
-  const newName = req.body.username;
+  const newName = typeof req.body.username === "string"
+    ? req.body.username.trim().toLowerCase()
+    : undefined;
 
   if (newName && newName !== oldName) {
     if (!/^[a-z0-9_]{3,24}$/.test(newName)) {
@@ -185,15 +297,19 @@ app.patch("/api/users/:username", (req, res) => {
     if (users.some(u => u.username === newName)) {
       return res.status(409).json({ error: "Username sudah digunakan" });
     }
-    const archives = readCol("archives").map(a => ({
+
+    // Rename hanya metadata index, bukan payload berkas. Ini menghindari
+    // penulisan ulang arsip besar saat pengguna sekadar mengganti username.
+    const updatedIndex = archivesMeta().map(a => ({
       ...a,
-      owner:      a.owner === oldName ? newName : a.owner,
-      sharedWith: (a.sharedWith || []).map(x => (x === oldName ? newName : x)),
+      owner: a.owner === oldName ? newName : a.owner,
+      sharedWith: (a.sharedWith || []).map(x => x === oldName ? newName : x),
     }));
-    writeCol("archives", archives);
+    writeArchiveIndex(updatedIndex);
+
     const inbox = readCol("inbox").map(i => ({
       ...i,
-      from:      i.from === oldName ? newName : i.from,
+      from: i.from === oldName ? newName : i.from,
       recipient: i.recipient === oldName ? newName : i.recipient,
     }));
     writeCol("inbox", inbox);
@@ -203,10 +319,16 @@ app.patch("/api/users/:username", (req, res) => {
   for (const k of ["avatar", "passHash"]) {
     if (k in req.body) users[idx][k] = req.body[k];
   }
+
   writeCol("users", users);
   const { passHash, ...safe } = users[idx];
   res.json(safe);
-});
+}
+
+app.patch("/api/users/:username", patchUser);
+// Fallback POST supaya update profil tetap dapat bekerja pada host/proxy
+// yang bermasalah meneruskan method PATCH.
+app.post("/api/users/:username/update", patchUser);
 
 // ════════════════════════════════════════════════════════════════
 // ROUTES — Storage
@@ -265,7 +387,7 @@ app.delete("/api/inbox/:id", (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
-  try { archivesMeta(); } catch { /* pemanasan cache, abaikan galat */ }
+  try { ensureArchiveStore(); archivesMeta(); } catch { /* pemanasan/migrasi, abaikan galat */ }
   console.log(`
 ╔══════════════════════════════════════════╗
 ║     Sistem Arsip Digital — Backend      ║
