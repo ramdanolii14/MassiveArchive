@@ -120,7 +120,8 @@ export default function App() {
     }
   );
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    await IDB.logout().catch(() => {});
     setSession(null);
     setArchives([]);
     setInbox([]);
