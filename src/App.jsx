@@ -41,7 +41,7 @@ export default function App() {
         IDB.listMeta(),
         IDB.getInbox(session.username),
         IDB.getUser(session.username),
-        IDB.getAllUsers(),
+        IDB.getAllUsers().catch(() => []),
       ]);
       const avatarMap = Object.fromEntries(users.map(u => [u.username, u.avatar || null]));
       const newest = (a, b) => new Date(b.createdAt) - new Date(a.createdAt);
