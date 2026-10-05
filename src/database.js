@@ -41,24 +41,14 @@ async function uploadReq(method, path, body, headers = {}) {
   return res.json();
 }
 
-function archiveCreds(session, purpose = "") {
-  if (!session) return "";
-  const qs = new URLSearchParams({
-    username: session.username,
-    keyId: session.keyId || "",
-  });
-  if (purpose) qs.set("purpose", purpose);
-  return "?" + qs.toString();
-}
-
 export const IDB = {
   // Archives
   add: (data) => req("POST", "/archives", data),
   getAll: () => req("GET", "/archives"),
-  get: (id, session) => req("GET", `/archives/${id}${archiveCreds(session)}`),
-  del: (id, username) => req("DELETE", `/archives/${id}`, { username }),
-  restore: (id, username) => req("POST", `/archives/${id}/restore`, { username }),
-  purge: (id, username) => req("DELETE", `/archives/${id}/permanent`, { username }),
+  get: (id) => req("GET", `/archives/${id}`),
+  del: (id) => req("DELETE", `/archives/${id}`),
+  restore: (id) => req("POST", `/archives/${id}/restore`),
+  purge: (id) => req("DELETE", `/archives/${id}/permanent`),
   count: async () => {
     const all = await req("GET", "/archives?meta=1&includeTrash=1");
     return all.length;
@@ -82,13 +72,9 @@ export const IDB = {
     `/archives?meta=1&trash=1&scope=owner&username=${encodeURIComponent(username)}`
   ),
   getMeta: (id) => req("GET", `/archives/${id}?meta=1`),
-  fileData: async (id, idx, session, purpose = "view") =>
-    reqBinary(`/archives/${id}/files/${idx}${archiveCreds(session, purpose)}`),
-  update: (id, patch, session) => req(
-    "PATCH",
-    `/archives/${id}`,
-    { ...patch, actor: session?.username, actorKeyId: session?.keyId }
-  ),
+  fileData: async (id, idx, _session, purpose = "view") =>
+    reqBinary(`/archives/${id}/files/${idx}?purpose=${encodeURIComponent(purpose)}`),
+  update: (id, patch) => req("PATCH", `/archives/${id}`, patch),
 
   byOwner: async (owner) => {
     const all = await req("GET", "/archives?meta=1&username=" + encodeURIComponent(owner) + "&scope=accessible");
