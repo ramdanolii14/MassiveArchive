@@ -58,11 +58,11 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
   const canEdit = isOwner || Boolean(perms.edit);
   const canReshare = isOwner || Boolean(perms.reshare);
 
-  const decrypt = async (file, idx) => {
+  const decrypt = async (file, idx, purpose = "view") => {
     setDecBusy(file.name);
     setDecStage("Mengambil berkas");
     try {
-      const encData = await IDB.fileData(arc.id, idx, session);
+      const encData = await IDB.fileData(arc.id, idx, session, purpose);
       setDecStage("Mendekripsi");
 
       let plain;
@@ -94,7 +94,7 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
       toast("Anda tidak memiliki izin mengunduh berkas ini.", "err");
       return;
     }
-    const blob = await decrypt(file, idx);
+    const blob = await decrypt(file, idx, "download");
     if (!blob) return;
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
