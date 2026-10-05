@@ -345,15 +345,25 @@ function archivePermissions(arc, actorKeyId, actorUsername) {
   if (arc.owner === actorUsername) {
     return { view: true, download: true, edit: true, reshare: true };
   }
+
   const envelope = (arc.keyEnvelopes || []).find(e =>
     (actorKeyId && e.keyId === actorKeyId) || e.username === actorUsername
   );
+
+  if (arc.keyMode !== "envelope-v1") {
+    return (arc.sharedWith || []).includes(actorUsername)
+      ? { view: true, download: true, edit: false, reshare: false }
+      : {};
+  }
+
+  if (!envelope) return {};
+
   return {
-    view: true,
-    download: true,
+    view: false,
+    download: false,
     edit: false,
     reshare: false,
-    ...(envelope?.permissions || {}),
+    ...(envelope.permissions || {}),
   };
 }
 
