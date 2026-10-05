@@ -473,12 +473,14 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
       const patch = { sharedWith: newShared };
 
       if (current.keyMode === "envelope-v1") {
-        const envelope = (current.keyEnvelopes || []).find(
-          e => e.username === username
-        );
-        patch.keyEnvelopes = (current.keyEnvelopes || []).filter(
-          e => !envelope || e.keyId !== envelope.keyId
-        );
+        const userRecord = users.find(u => u.username === username);
+        const keyId =
+          userRecord?.keyId ||
+          current.keyEnvelopes?.find(e => e.username === username)?.keyId;
+
+        patch.keyEnvelopes = keyId
+          ? (current.keyEnvelopes || []).filter(e => e.keyId !== keyId)
+          : (current.keyEnvelopes || []);
       }
 
       await IDB.update(current.id, patch);
