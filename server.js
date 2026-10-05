@@ -202,6 +202,137 @@ function nextId(col) {
 }
 
 // ════════════════════════════════════════════════════════════════
+// AUTHENTICATION — server-side session
+// ════════════════════════════════════════════════════════════════
+
+const sessions = new Map();
+const SESSION_TTL = 7 * 24 * 60 * 60 * 1000;
+
+function parseCookies(header = "") {
+  const out = {};
+  for (const part of header.split(";")) {
+    const i = part.indexOf("=");
+    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return out;
+}
+
+function createSession(userId) {
+  const token = crypto.randomBytes(32).toString("hex");
+  sessions.set(token, { userId, expiresAt: Date.now() + SESSION_TTL });
+  return token;
+}
+
+function setSessionCookie(res, token) {
+  const secure = process.env.NODE_ENV === "production";
+  const parts = [
+    `ma_session=${encodeURIComponent(token)}` ,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${Math.floor(SESSION_TTL / 1000)}`
+  ];
+  if (secure) parts.push("Secure");
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function clearSessionCookie(res) {
+  res.setHeader("Set-Cookie", "ma_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+}
+
+function publicUser(user) {
+  if (!user) return null;
+  const { passHash, privateKeyBox, recoveryHash, recoveryKeyBox, ...safe } = user;
+  return safe;
+}
+
+function authRequired(req, res, next) {
+  const token = parseCookies(req.headers.cookie || "").ma_session;
+  const record = token ? sessions.get(token) : null;
+  if (!record || record.expiresAt <= Date.now()) {
+    if (token) sessions.delete(token);
+    return res.status(401).json({ error: "Sesi login tidak valid atau sudah berakhir." });
+  }
+  const user = readCol("users").find(u => u.id === record.userId);
+  if (!user) {
+    sessions.delete(token);
+    return res.status(401).json({ error: "Akun tidak ditemukan." });
+  }
+  req.sessionToken = token;
+  req.user = user;
+  record.expiresAt = Date.now() + SESSION_TTL;
+  next();
+}
+
+function findUserByUsername(username) {
+  const name = String(username || "").trim().toLowerCase();
+  return readCol("users").find(u => u.username === name) || null;
+}
+
+app.post("/api/auth/login", (req, res) => {
+  const username = String(req.body?.username || "").trim().toLowerCase();
+  const passHash = String(req.body?.passHash || "");
+  const user = findUserByUsername(username);
+  if (!user || !passHash || user.passHash !== passHash) {
+    return res.status(401).json({ error: "Username atau kata kunci salah." });
+  }
+  const token = createSession(user.id);
+  setSessionCookie(res, token);
+  res.json(user);
+});
+
+app.post("/api/auth/register", (req, res) => {
+  const username = String(req.body?.username || "").trim().toLowerCase();
+  if (!/^[a-z0-9_]{3,24}$/.test(username)) {
+    return res.status(400).json({ error: "Username tidak valid." });
+  }
+  const users = readCol("users");
+  if (users.some(u => u.username === username)) {
+    return res.status(409).json({ error: "Username sudah digunakan." });
+  }
+  const required = ["passHash", "publicKey", "keyId", "privateKeyBox"];
+  if (required.some(k => !req.body?.[k])) {
+    return res.status(400).json({ error: "Data akun keamanan tidak lengkap." });
+  }
+  const item = {
+    ...req.body,
+    username,
+    id: nextId(users),
+    createdAt: req.body?.createdAt || new Date().toISOString(),
+  };
+  delete item.actor;
+  users.push(item);
+  writeCol("users", users);
+  const token = createSession(item.id);
+  setSessionCookie(res, token);
+  res.status(201).json(item);
+});
+
+app.post("/api/auth/recover", (req, res) => {
+  const username = String(req.body?.username || "").trim().toLowerCase();
+  const recoveryHash = String(req.body?.recoveryHash || "");
+  const user = findUserByUsername(username);
+  if (!user || !user.recoveryHash || user.recoveryHash !== recoveryHash) {
+    return res.status(401).json({ error: "Recovery Key tidak valid." });
+  }
+  const token = createSession(user.id);
+  setSessionCookie(res, token);
+  res.json(user);
+});
+
+app.post("/api/auth/logout", authRequired, (req, res) => {
+  sessions.delete(req.sessionToken);
+  clearSessionCookie(res);
+  res.json({ ok: true });
+});
+
+app.get("/api/auth/me", authRequired, (req, res) => {
+  res.json(req.user);
+});
+
+app.use(authRequired);
+
+// ════════════════════════════════════════════════════════════════
 // ROUTES — Archives
 // ════════════════════════════════════════════════════════════════
 
@@ -246,9 +377,7 @@ function archiveQuery(req, input) {
     return !isDeleted(a);
   });
 
-  const username = typeof req.query.username === "string"
-    ? req.query.username.trim().toLowerCase()
-    : "";
+  const username = req.user?.username || "";
   const scope = req.query.scope || "";
 
   if (scope === "accessible" && username) {
@@ -430,8 +559,8 @@ app.get("/api/archives/:id", (req, res) => {
   if (!meta) return res.status(404).json({ error: "Tidak ditemukan" });
   if (req.query.meta) return res.json(meta);
 
-  const username = String(req.query.username || "").trim().toLowerCase();
-  const keyId = String(req.query.keyId || "");
+  const username = req.user.username;
+  const keyId = req.user.keyId || "";
   const arc = readArchive(id);
   if (!canReadArchive(arc, keyId, username)) {
     return res.status(403).json({ error: "Anda tidak memiliki akses untuk membuka arsip ini." });
@@ -446,8 +575,8 @@ app.get("/api/archives/:id/files/:idx", (req, res) => {
   if (!arc) return res.status(404).json({ error: "Tidak ditemukan" });
   if (isDeleted(arc)) return res.status(410).json({ error: "Arsip berada di Tempat Sampah." });
 
-  const username = String(req.query.username || "").trim().toLowerCase();
-  const keyId = String(req.query.keyId || "");
+  const username = req.user.username;
+  const keyId = req.user.keyId || "";
   const perms = archivePermissions(arc, keyId, username);
   const purpose = req.query.purpose === "download" ? "download" : "view";
   if (!perms[purpose]) {
@@ -475,9 +604,10 @@ app.get("/api/archives/:id/files/:idx", (req, res) => {
 
 app.post("/api/archives", (req, res) => {
   const index = archivesMeta();
-  const actor = String(req.body?.actor || req.body?.owner || "").trim().toLowerCase();
+  const actor = req.user.username;
   const item = { ...req.body, id: nextId(index) };
   delete item.actor;
+  item.owner = actor;
   if (item.deletedAt) delete item.deletedAt;
   if (Array.isArray(item.files)) {
     try { item.files = materializeUploads(item.files, item.id); }
@@ -497,8 +627,8 @@ app.patch("/api/archives/:id", (req, res) => {
   if (!current) return res.status(404).json({ error: "Tidak ditemukan" });
   if (isDeleted(current)) return res.status(409).json({ error: "Arsip berada di Tempat Sampah." });
 
-  const actor = String(req.body?.actor || "").trim().toLowerCase();
-  const actorKeyId = String(req.body?.actorKeyId || "");
+  const actor = req.user.username;
+  const actorKeyId = req.user.keyId || "";
   const shareChanged =
     ("keyEnvelopes" in req.body && JSON.stringify(req.body.keyEnvelopes) !== JSON.stringify(current.keyEnvelopes)) ||
     ("sharedWith" in req.body && JSON.stringify(req.body.sharedWith) !== JSON.stringify(current.sharedWith));
@@ -525,7 +655,7 @@ app.delete("/api/archives/:id", (req, res) => {
   const id = parseInt(req.params.id, 10);
   const current = archivesMeta().find(a => a.id === id);
   if (!current) return res.status(404).json({ error: "Tidak ditemukan" });
-  const actor = String(req.body?.username || "").trim().toLowerCase();
+  const actor = req.user.username;
   if (current.owner !== actor) return res.status(403).json({ error: "Hanya pemilik yang dapat memindahkan arsip." });
   if (!isDeleted(current)) {
     const patch = { deletedAt: new Date().toISOString(), deletedBy: actor };
