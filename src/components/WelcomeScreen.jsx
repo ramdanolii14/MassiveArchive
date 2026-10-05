@@ -40,6 +40,8 @@ export function WelcomeScreen({ onLogin }) {
       const user = await IDB.login(username.trim().toLowerCase(), hash);
 
       let identity;
+      let securityPatch = {};
+
       try {
         if (user.publicKey && user.privateKeyBox && user.keyId) {
           identity = {
@@ -48,13 +50,12 @@ export function WelcomeScreen({ onLogin }) {
             privateKey: await Crypto.unlockIdentity(user.privateKeyBox, pass),
           };
         } else {
-          const created = await Crypto.createIdentity(pass);
-          await IDB.updateUser(user.username, {
-            publicKey: created.publicKey,
-            keyId: created.keyId,
-            privateKeyBox: created.privateKeyBox,
-          });
-          identity = created;
+          identity = await Crypto.createIdentity(pass);
+          securityPatch = {
+            publicKey: identity.publicKey,
+            keyId: identity.keyId,
+            privateKeyBox: identity.privateKeyBox,
+          };
         }
       } catch {
         setErr("Gagal menyiapkan identitas keamanan akun.");
@@ -64,12 +65,17 @@ export function WelcomeScreen({ onLogin }) {
 
       if (!user.hasRecovery) {
         const recovery = await Crypto.createRecoveryBundle(identity.privateKey);
-        await IDB.updateUser(user.username, {
+        securityPatch = {
+          ...securityPatch,
           recoveryHash: recovery.recoveryHash,
           recoveryKeyBox: recovery.recoveryKeyBox,
-        });
+        };
+        await IDB.updateUser(user.username, securityPatch);
         setRecoveryNotice(recovery.recoveryKey);
         setPendingSession(sessionFromUser(user, pass, identity.privateKey));
+      } else if (Object.keys(securityPatch).length) {
+        await IDB.updateUser(user.username, securityPatch);
+        onLogin(sessionFromUser(user, pass, identity.privateKey));
       } else {
         onLogin(sessionFromUser(user, pass, identity.privateKey));
       }
