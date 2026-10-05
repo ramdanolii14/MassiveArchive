@@ -118,11 +118,18 @@ export const IDB = {
       totalSize: (a.files || []).reduce((s, f) => s + (f.size || 0), 0),
     })),
 
+  // Authentication
+  login: (username, passHash) => req("POST", "/auth/login", { username, passHash }),
+  register: (data) => req("POST", "/auth/register", data),
+  recover: (username, recoveryHash) => req("POST", "/auth/recover", { username, recoveryHash }),
+  me: () => req("GET", "/auth/me"),
+  logout: () => req("POST", "/auth/logout"),
+
   // Users
   getUser: (username) => req("GET", `/users/${encodeURIComponent(username)}`).catch(() => null),
-  addUser: (data) => req("POST", "/users", data),
+  addUser: (data) => req("POST", "/auth/register", data),
   getAllUsers: () => req("GET", "/users"),
-  updateUser: (username, patch) => req("POST", "/profile", { username, ...patch }),
+  updateUser: (_username, patch) => req("POST", "/profile", patch),
 
   // Resumable encrypted uploads
   startUpload: (meta) => req("POST", "/uploads", meta),
