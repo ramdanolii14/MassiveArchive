@@ -83,7 +83,7 @@ export function Dashboard({ archives, session, avatar, onGo, onDetail }) {
 
 // Daftar arsip
 
-export function Browse({ archives, allMeta, session, onDetail }) {
+export function Browse({ archives, allMeta, session, userAvatars, onDetail }) {
   const [cat,   setCat]   = useState("");
   const [from,  setFrom]  = useState("");
   const [to,    setTo]    = useState("");
@@ -151,7 +151,12 @@ export function Browse({ archives, allMeta, session, onDetail }) {
                       </div>
                     </td>
                     <td className="mono">{a.date}</td>
-                    <td>{a.owner === session.username ? "Saya" : a.owner}</td>
+                    <td>
+                      <div className="owner-cell">
+                        <Avatar src={userAvatars?.[a.owner]} name={a.owner} />
+                        <span>{a.owner === session.username ? "Saya" : a.owner}</span>
+                      </div>
+                    </td>
                     <td style={{ textAlign: "right" }}>
                       {!ok && <span className="badge badge-line">Terkunci</span>}
                     </td>
