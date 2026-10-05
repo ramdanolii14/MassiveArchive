@@ -18,7 +18,6 @@ export default function App() {
   const [session,  setSession]  = useState(null); // { username, passphrase }
   const [view,     setView]     = useState("dashboard");
   const [archives, setArchives] = useState([]);  // full records (own + shared-with-me)
-  const [allMeta,  setAllMeta]  = useState([]);  // metadata-only for ALL archives
   const [loading,  setLoading]  = useState(true);
   const [search,   setSearch]   = useState("");
   const [selId,    setSelId]    = useState(null);
@@ -56,7 +55,6 @@ export default function App() {
           .filter(a => a.owner === session.username || (a.sharedWith || []).includes(session.username))
           .sort(newest)
       );
-      setAllMeta(IDB.metaOf(list).sort(newest));
       setInbox(msgs.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)));
       setAvatar(me?.avatar || null);
       setUserAvatars(avatarMap);
@@ -81,14 +79,6 @@ export default function App() {
       .filter(Boolean).some(v => v.toLowerCase().includes(q));
   });
 
-  // Search filter for allMeta (public directory)
-  const filteredMeta = allMeta.filter(a => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return [a.title, a.archiveId, a.description, a.category, a.author, ...(a.tags || [])]
-      .filter(Boolean).some(v => v.toLowerCase().includes(q));
-  });
-
   const goDetail = (id) => { setSelId(id); setView("detail"); };
 
   // InboxView passes archiveId (numeric IDB key), not archiveId string
@@ -97,14 +87,14 @@ export default function App() {
   const handleSave = async (data) => {
     try {
       const cnt = await IDB.count();
-      await IDB.add({
+      const created = await IDB.add({
         ...data,
         archiveId: genId(cnt),
         owner:     session.username,
         actor:     session.username,
         createdAt: new Date().toISOString(),
       });
-      await logAudit(session, "create", { archiveId: data.archiveId, title: data.title });
+      await logAudit(session, "create", { archiveId: created.archiveId, title: created.title });
       await load();
       showToast("Arsip disimpan.");
       setView("browse");
@@ -133,7 +123,6 @@ export default function App() {
   const handleLogout = () => {
     setSession(null);
     setArchives([]);
-    setAllMeta([]);
     setInbox([]);
     setAvatar(null);
     setUserAvatars({});
@@ -213,7 +202,6 @@ export default function App() {
           ) : view === "browse" ? (
             <Browse
               archives={filtered}
-              allMeta={filteredMeta}
               session={session}
               userAvatars={userAvatars}
               search={search}
