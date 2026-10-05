@@ -112,7 +112,7 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
       let n = 0;
 
       for (const meta of legacyMine) {
-        const arc = await IDB.get(meta.id);
+        const arc = await IDB.get(meta.id, session);
         if (!arc?.files?.length) continue;
         const files = [];
 
@@ -127,7 +127,7 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
           files.push({ ...f, encData: await Crypto.encrypt(plain, np) });
         }
 
-        await IDB.update(arc.id, { files });
+        await IDB.update(arc.id, { files }, session);
       }
 
       await IDB.updateUser(session.username, {

@@ -8,6 +8,9 @@ import { Dashboard, Browse, AddForm } from "./views/ArchiveViews.jsx";
 import { DetailView }     from "./views/DetailView.jsx";
 import { InboxView }      from "./views/InboxView.jsx";
 import { ProfileView }    from "./views/ProfileView.jsx";
+import { TrashView }      from "./views/TrashView.jsx";
+import { AuditView }      from "./views/AuditView.jsx";
+import { logAudit }       from "./audit.js";
 
 // ROOT APP
 
@@ -15,7 +18,6 @@ export default function App() {
   const [session,  setSession]  = useState(null); // { username, passphrase }
   const [view,     setView]     = useState("dashboard");
   const [archives, setArchives] = useState([]);  // full records (own + shared-with-me)
-  const [allMeta,  setAllMeta]  = useState([]);  // metadata-only for ALL archives
   const [loading,  setLoading]  = useState(true);
   const [search,   setSearch]   = useState("");
   const [selId,    setSelId]    = useState(null);
@@ -24,6 +26,7 @@ export default function App() {
   const [inbox,    setInbox]    = useState([]);
   const [avatar,   setAvatar]   = useState(null);
   const [userAvatars, setUserAvatars] = useState({});
+  const [trashCount, setTrashCount] = useState(0);
 
   // Inject CSS once
   useEffect(() => {
@@ -37,11 +40,12 @@ export default function App() {
   const load = useCallback(async () => {
     if (!session) return;
     try {
-      const [list, msgs, me, users] = await Promise.all([
+      const [list, msgs, me, users, trash] = await Promise.all([
         IDB.listMeta(),
         IDB.getInbox(session.username),
         IDB.getUser(session.username),
         IDB.getAllUsers().catch(() => []),
+        IDB.trashMeta(session.username).catch(() => []),
       ]);
       const avatarMap = Object.fromEntries(users.map(u => [u.username, u.avatar || null]));
       const newest = (a, b) => new Date(b.createdAt) - new Date(a.createdAt);
@@ -51,10 +55,10 @@ export default function App() {
           .filter(a => a.owner === session.username || (a.sharedWith || []).includes(session.username))
           .sort(newest)
       );
-      setAllMeta(IDB.metaOf(list).sort(newest));
       setInbox(msgs.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)));
       setAvatar(me?.avatar || null);
       setUserAvatars(avatarMap);
+      setTrashCount(trash.length);
     } catch { showToast("Gagal memuat data", "err"); }
     finally  { setLoading(false); }
   }, [session]);
@@ -75,14 +79,6 @@ export default function App() {
       .filter(Boolean).some(v => v.toLowerCase().includes(q));
   });
 
-  // Search filter for allMeta (public directory)
-  const filteredMeta = allMeta.filter(a => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return [a.title, a.archiveId, a.description, a.category, a.author, ...(a.tags || [])]
-      .filter(Boolean).some(v => v.toLowerCase().includes(q));
-  });
-
   const goDetail = (id) => { setSelId(id); setView("detail"); };
 
   // InboxView passes archiveId (numeric IDB key), not archiveId string
@@ -91,12 +87,14 @@ export default function App() {
   const handleSave = async (data) => {
     try {
       const cnt = await IDB.count();
-      await IDB.add({
+      const created = await IDB.add({
         ...data,
         archiveId: genId(cnt),
         owner:     session.username,
+        actor:     session.username,
         createdAt: new Date().toISOString(),
       });
+      await logAudit(session, "create", { archiveId: created.archiveId, title: created.title });
       await load();
       showToast("Arsip disimpan.");
       setView("browse");
@@ -104,24 +102,31 @@ export default function App() {
   };
 
   const handleDelete = (id) => askConfirm(
-    "Hapus arsip?",
-    "Arsip dan semua berkasnya akan dihapus permanen.",
+    "Pindahkan ke Tempat Sampah?",
+    "Arsip dipindahkan ke Tempat Sampah dan masih dapat dipulihkan.",
     async () => {
-      await IDB.del(id);
-      await load();
-      setConfirm(null);
-      showToast("Arsip dihapus.");
-      setView("browse");
+      try {
+        const meta = await IDB.getMeta(id);
+        await IDB.del(id, session.username);
+        await logAudit(session, "trash", { archiveId: id, title: meta?.title });
+        await load();
+        setConfirm(null);
+        showToast("Arsip dipindahkan ke Tempat Sampah.");
+        setView("browse");
+      } catch (e) {
+        setConfirm(null);
+        showToast(e.message || "Gagal memindahkan arsip.", "err");
+      }
     }
   );
 
   const handleLogout = () => {
     setSession(null);
     setArchives([]);
-    setAllMeta([]);
     setInbox([]);
     setAvatar(null);
     setUserAvatars({});
+    setTrashCount(0);
     setView("dashboard");
     setLoading(true);
   };
@@ -135,6 +140,8 @@ export default function App() {
     { id: "browse",    label: "Arsip" },
     { id: "add",       label: "Arsip Baru" },
     { id: "inbox",     label: "Kotak Masuk", count: unreadCount },
+    { id: "trash",     label: "Tempat Sampah", count: trashCount },
+    { id: "audit",     label: "Aktivitas" },
     { id: "profile",   label: "Profil" },
   ];
 
@@ -144,6 +151,8 @@ export default function App() {
     add:       "Arsip Baru",
     detail:    "Detail Arsip",
     inbox:     "Kotak Masuk",
+    trash:     "Tempat Sampah",
+    audit:     "Aktivitas",
     profile:   "Profil",
   };
 
@@ -193,9 +202,9 @@ export default function App() {
           ) : view === "browse" ? (
             <Browse
               archives={filtered}
-              allMeta={filteredMeta}
               session={session}
               userAvatars={userAvatars}
+              search={search}
               onDetail={goDetail}
             />
           ) : view === "add" ? (
@@ -214,6 +223,18 @@ export default function App() {
               onDelete={handleDelete}
               toast={showToast}
               onReload={load}
+            />
+          ) : view === "trash" ? (
+            <TrashView
+              session={session}
+              userAvatars={userAvatars}
+              toast={showToast}
+              onReload={load}
+            />
+          ) : view === "audit" ? (
+            <AuditView
+              session={session}
+              toast={showToast}
             />
           ) : view === "inbox" ? (
             <InboxView
