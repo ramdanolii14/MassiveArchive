@@ -444,6 +444,7 @@ app.get("/api/archives/:id/files/:idx", (req, res) => {
   const idx = parseInt(req.params.idx, 10);
   const arc = readArchive(id);
   if (!arc) return res.status(404).json({ error: "Tidak ditemukan" });
+  if (isDeleted(arc)) return res.status(410).json({ error: "Arsip berada di Tempat Sampah." });
 
   const username = String(req.query.username || "").trim().toLowerCase();
   const keyId = String(req.query.keyId || "");
