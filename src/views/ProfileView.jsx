@@ -131,6 +131,7 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
       }
 
       await IDB.updateUser(session.username, {
+        currentPassHash: await Crypto.hashPass(cur),
         passHash: await Crypto.hashPass(np),
         ...(privateKeyBox ? { privateKeyBox } : {}),
       });
