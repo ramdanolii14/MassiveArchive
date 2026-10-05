@@ -79,29 +79,66 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
         toast("Kata kunci saat ini salah.", "err"); setBusy(""); return;
       }
 
-      // Ambil metadata ringan terlebih dahulu. Setiap arsip kemudian
-      // diproses dari shard-nya sendiri sehingga perubahan kata kunci
-      // tidak lagi memuat satu database besar ke memori sekaligus.
+      // Identitas ECDH tetap sama. Yang berubah hanya password yang
+      // membungkus private key. Arsip yang sudah memakai envelope key
+      // tidak perlu dienkripsi ulang sama sekali.
+      let privateKeyBox = user.privateKeyBox;
+      if (privateKeyBox) {
+        privateKeyBox = await Crypto.rewrapIdentity(
+          privateKeyBox, cur, np
+        );
+      } else if (!session.identityPrivateKey) {
+        const identity = await Crypto.createIdentity(np);
+        privateKeyBox = identity.privateKeyBox;
+        onSession({
+          ...session,
+          passphrase: np,
+          publicKey: identity.publicKey,
+          keyId: identity.keyId,
+          identityPrivateKey: identity.privateKey,
+        });
+      }
+
+      // Arsip format lama masih memakai password sebagai kunci isi.
+      // Hanya format lama yang perlu rotasi saat password berubah.
       const metas = await IDB.listMeta();
-      const mine  = metas.filter(a => a.owner === session.username && a.files?.length > 0);
-      const total = mine.reduce((s, a) => s + (a.fileCount || 0), 0);
+      const legacyMine = metas.filter(a =>
+        a.owner === session.username &&
+        a.keyMode !== "envelope-v1" &&
+        a.files?.length > 0
+      );
+      const total = legacyMine.reduce((n, a) => n + (a.fileCount || 0), 0);
       let n = 0;
-      for (const meta of mine) {
+
+      for (const meta of legacyMine) {
         const arc = await IDB.get(meta.id);
         if (!arc?.files?.length) continue;
         const files = [];
+
         for (const f of arc.files) {
           setProg(`${++n}/${total}`);
           let plain;
-          try { plain = await Crypto.decrypt(f.encData, session.passphrase); }
-          catch { throw new Error(`Tidak bisa membuka "${f.name}". Perubahan dibatalkan.`); }
+          try {
+            plain = await Crypto.decrypt(f.encData, session.passphrase);
+          } catch {
+            throw new Error(`Tidak bisa membuka "${f.name}". Perubahan dibatalkan.`);
+          }
           files.push({ ...f, encData: await Crypto.encrypt(plain, np) });
         }
+
         await IDB.update(arc.id, { files });
       }
-      await IDB.updateUser(session.username, { passHash: await Crypto.hashPass(np) });
 
-      onSession({ ...session, passphrase: np });
+      await IDB.updateUser(session.username, {
+        passHash: await Crypto.hashPass(np),
+        ...(privateKeyBox ? { privateKeyBox } : {}),
+      });
+
+      onSession({
+        ...session,
+        passphrase: np,
+        ...(privateKeyBox ? { privateKeyBox } : {}),
+      });
       setCur(""); setNp(""); setNp2("");
       toast("Kata kunci diperbarui.");
     } catch (e) { toast(e.message || "Gagal mengubah kata kunci.", "err"); }
