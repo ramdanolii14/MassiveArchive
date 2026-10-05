@@ -814,6 +814,10 @@ function patchUser(req, res) {
   for (const k of ["avatar", ...securityFields]) {
     if (k in req.body) users[idx][k] = req.body[k];
   }
+  if (changingSecurity) {
+    const sessionRecord = sessions.get(req.sessionToken);
+    if (sessionRecord) sessionRecord.recoveryAuthorized = false;
+  }
 
   writeCol("users", users);
   res.json(req.user.id === users[idx].id ? users[idx] : publicUser(users[idx]));
