@@ -325,7 +325,6 @@ app.post("/api/auth/register", (req, res) => {
   };
   delete item.actor;
   users.push(item);
-  delete req.body.currentPassHash;
   writeCol("users", users);
   const token = createSession(item.id);
   setSessionCookie(res, token, req);
@@ -825,6 +824,7 @@ function patchUser(req, res) {
       sessionRecord.securityBootstrap = false;
     }
   }
+  delete req.body.currentPassHash;
 
   writeCol("users", users);
   res.json(req.user.id === users[idx].id ? users[idx] : publicUser(users[idx]));
