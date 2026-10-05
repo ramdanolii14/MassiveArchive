@@ -100,7 +100,8 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
       }
 
       // Arsip format lama masih memakai password sebagai kunci isi.
-      // Hanya format lama yang perlu rotasi saat password berubah.
+      // Hanya arsip lama yang perlu rotasi data. Arsip envelope yang
+      // sudah memakai archive key tidak berubah saat password diganti.
       const metas = await IDB.listMeta();
       const legacyMine = metas.filter(a =>
         a.owner === session.username &&
