@@ -3,8 +3,9 @@ import { IDB }    from "../database.js";
 import { Crypto } from "../crypto.js";
 import { fmtSize, fmtDT, fileTypeLabel, fileExtension } from "../utils.js";
 import { EditForm } from "./ArchiveViews.jsx";
+import { Avatar } from "../components/Avatar.jsx";
 
-export function DetailView({ recId, session, onBack, onDelete, toast, onReload }) {
+export function DetailView({ recId, session, userAvatars, onBack, onDelete, toast, onReload }) {
   const [arc,       setArc]       = useState(null);
   const [prev,      setPrev]      = useState(null);
   const [decBusy,   setDecBusy]   = useState(null);
@@ -151,6 +152,13 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
           <div className="grow">
             <div className="dt-id">{arc.archiveId}</div>
             <div className="dt-title">{arc.title}</div>
+            <div className="archive-uploader">
+              <Avatar src={userAvatars?.[arc.owner]} name={arc.owner} />
+              <div>
+                <div className="archive-uploader-label">Diunggah oleh</div>
+                <div className="archive-uploader-name">{arc.owner}</div>
+              </div>
+            </div>
             <div className="row" style={{ gap: 6 }}>
               {arc.category && <span className="badge">{arc.category}</span>}
               {arc.status   && <span className="badge badge-line">{arc.status}</span>}

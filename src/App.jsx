@@ -23,6 +23,7 @@ export default function App() {
   const [confirm,  setConfirm]  = useState(null);
   const [inbox,    setInbox]    = useState([]);
   const [avatar,   setAvatar]   = useState(null);
+  const [userAvatars, setUserAvatars] = useState({});
 
   // Inject CSS once
   useEffect(() => {
@@ -36,11 +37,13 @@ export default function App() {
   const load = useCallback(async () => {
     if (!session) return;
     try {
-      const [list, msgs, me] = await Promise.all([
+      const [list, msgs, me, users] = await Promise.all([
         IDB.listMeta(),
         IDB.getInbox(session.username),
         IDB.getUser(session.username),
+        IDB.getAllUsers().catch(() => []),
       ]);
+      const avatarMap = Object.fromEntries(users.map(u => [u.username, u.avatar || null]));
       const newest = (a, b) => new Date(b.createdAt) - new Date(a.createdAt);
 
       setArchives(
@@ -51,6 +54,7 @@ export default function App() {
       setAllMeta(IDB.metaOf(list).sort(newest));
       setInbox(msgs.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)));
       setAvatar(me?.avatar || null);
+      setUserAvatars(avatarMap);
     } catch { showToast("Gagal memuat data", "err"); }
     finally  { setLoading(false); }
   }, [session]);
@@ -117,6 +121,7 @@ export default function App() {
     setAllMeta([]);
     setInbox([]);
     setAvatar(null);
+    setUserAvatars({});
     setView("dashboard");
     setLoading(true);
   };
@@ -190,6 +195,7 @@ export default function App() {
               archives={filtered}
               allMeta={filteredMeta}
               session={session}
+              userAvatars={userAvatars}
               onDetail={goDetail}
             />
           ) : view === "add" ? (
@@ -203,6 +209,7 @@ export default function App() {
               key={selId}
               recId={selId}
               session={session}
+              userAvatars={userAvatars}
               onBack={() => setView("browse")}
               onDelete={handleDelete}
               toast={showToast}
@@ -220,7 +227,10 @@ export default function App() {
             <ProfileView
               session={session}
               avatar={avatar}
-              onAvatar={setAvatar}
+              onAvatar={(value) => {
+                setAvatar(value);
+                setUserAvatars(prev => ({ ...prev, [session.username]: value }));
+              }}
               onSession={setSession}
               toast={showToast}
             />
