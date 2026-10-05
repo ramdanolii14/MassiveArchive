@@ -64,7 +64,7 @@ export function WelcomeScreen({ onLogin }) {
       }
 
       if (!user.hasRecovery) {
-        const recovery = await Crypto.createRecoveryBundle(identity.privateKey);
+        const recovery = await Crypto.createRecoveryBundle(identity.privateKeyBox, pass);
         securityPatch = {
           ...securityPatch,
           recoveryHash: recovery.recoveryHash,
@@ -109,7 +109,7 @@ export function WelcomeScreen({ onLogin }) {
     try {
       const passHash = await Crypto.hashPass(pass);
       const identity = await Crypto.createIdentity(pass);
-      const recovery = await Crypto.createRecoveryBundle(identity.privateKey);
+      const recovery = await Crypto.createRecoveryBundle(identity.privateKeyBox, pass);
 
       const user = await IDB.register({
         username: nextUsername,
@@ -168,7 +168,7 @@ export function WelcomeScreen({ onLogin }) {
         user.recoveryKeyBox,
         key
       );
-      const privateKeyBox = await Crypto.rewrapIdentity(
+      const privateKeyBox = await Crypto.rewrapRecoveryAsIdentity(
         user.recoveryKeyBox,
         key,
         pass

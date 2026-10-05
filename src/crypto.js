@@ -106,13 +106,12 @@ export const Crypto = {
       .map(b => b.toString(16).padStart(2, "0")).join("");
   },
 
-  async createRecoveryBundle(privateKey) {
-    const privateJwk = await window.crypto.subtle.exportKey("jwk", privateKey);
-    const bytes = textEncoder.encode(JSON.stringify(privateJwk));
+  async createRecoveryBundle(privateKeyBox, passphrase) {
+    const plain = await this.decrypt(privateKeyBox, passphrase);
     const random = window.crypto.getRandomValues(new Uint8Array(32));
     const recoveryKey = Array.from(random)
       .map(b => b.toString(16).padStart(2, "0")).join("");
-    const recoveryKeyBox = await this.encrypt(bytes.buffer, recoveryKey);
+    const recoveryKeyBox = await this.encrypt(plain, recoveryKey);
     return {
       recoveryKey,
       recoveryHash: await this.hashRecoveryKey(recoveryKey),
@@ -128,6 +127,11 @@ export const Crypto = {
       { name: "ECDH", namedCurve: "P-256" },
       false, ["deriveBits"]
     );
+  },
+
+  async rewrapRecoveryAsIdentity(recoveryKeyBox, recoveryKey, newPassphrase) {
+    const plain = await this.decrypt(recoveryKeyBox, recoveryKey);
+    return this.encrypt(plain, newPassphrase);
   },
 
   async publicKeyId(publicJwk) {
