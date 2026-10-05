@@ -23,6 +23,7 @@ export function WelcomeScreen({ onLogin }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [recoveryNotice, setRecoveryNotice] = useState("");
+  const [pendingSession, setPendingSession] = useState(null);
 
   const strength = passStrength(pass);
 
