@@ -1,0 +1,162 @@
+import { useState, useRef } from "react";
+import { IDB }    from "../database.js";
+import { Crypto } from "../crypto.js";
+import { Avatar } from "../components/Avatar.jsx";
+
+const AVATAR_SIZE = 256;
+
+function toAvatar(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(img.width, img.height);
+      const c = document.createElement("canvas");
+      c.width = c.height = AVATAR_SIZE;
+      c.getContext("2d").drawImage(
+        img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, AVATAR_SIZE, AVATAR_SIZE
+      );
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL("image/jpeg", 0.86));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Gambar tidak valid.")); };
+    img.src = url;
+  });
+}
+
+export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
+  const [name,  setName]  = useState(session.username);
+  const [cur,   setCur]   = useState("");
+  const [np,    setNp]    = useState("");
+  const [np2,   setNp2]   = useState("");
+  const [busy,  setBusy]  = useState("");
+  const [prog,  setProg]  = useState("");
+  const fileRef = useRef();
+
+  const pickAvatar = async (file) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { toast("Pilih berkas gambar.", "err"); return; }
+    try {
+      const data = await toAvatar(file);
+      await IDB.updateUser(session.username, { avatar: data });
+      onAvatar(data);
+      toast("Foto profil disimpan.");
+    } catch (e) { toast(e.message || "Gagal menyimpan foto.", "err"); }
+  };
+
+  const removeAvatar = async () => {
+    try {
+      await IDB.updateUser(session.username, { avatar: null });
+      onAvatar(null);
+      toast("Foto profil dihapus.");
+    } catch { toast("Gagal menghapus foto.", "err"); }
+  };
+
+  const saveName = async () => {
+    const next = name.trim().toLowerCase();
+    if (next === session.username) return;
+    if (!/^[a-z0-9_]{3,24}$/.test(next)) {
+      toast("Username 3 sampai 24 karakter: huruf kecil, angka, atau garis bawah.", "err"); return;
+    }
+    setBusy("name");
+    try {
+      await IDB.updateUser(session.username, { username: next });
+      onSession({ ...session, username: next });
+      toast("Username diperbarui.");
+    } catch (e) { toast(e.message || "Gagal mengubah username.", "err"); }
+    setBusy("");
+  };
+
+  const savePass = async () => {
+    if (!cur || !np) { toast("Isi semua kolom kata kunci.", "err"); return; }
+    if (np.length < 8) { toast("Kata kunci baru minimal 8 karakter.", "err"); return; }
+    if (np !== np2)    { toast("Konfirmasi kata kunci tidak cocok.", "err"); return; }
+    if (np === cur)    { toast("Kata kunci baru sama dengan yang lama.", "err"); return; }
+    setBusy("pass");
+    try {
+      const user = await IDB.getUser(session.username);
+      if (!user || (await Crypto.hashPass(cur)) !== user.passHash) {
+        toast("Kata kunci saat ini salah.", "err"); setBusy(""); return;
+      }
+
+      // Berkas dienkripsi dengan kata kunci, jadi semua berkas milik sendiri dienkripsi ulang.
+      // Seluruhnya diproses di memori dulu, baru ditulis, agar tidak setengah jadi.
+      const all  = await IDB.getAll();
+      const mine = all.filter(a => a.owner === session.username && a.files?.length);
+      const total = mine.reduce((s, a) => s + a.files.length, 0);
+      let n = 0;
+      const updates = [];
+      for (const arc of mine) {
+        const files = [];
+        for (const f of arc.files) {
+          setProg(`${++n}/${total}`);
+          let plain;
+          try { plain = await Crypto.decrypt(f.encData, session.passphrase); }
+          catch { throw new Error(`Tidak bisa membuka "${f.name}". Perubahan dibatalkan.`); }
+          files.push({ ...f, encData: await Crypto.encrypt(plain, np) });
+        }
+        updates.push({ id: arc.id, files });
+      }
+      for (const u of updates) await IDB.update(u.id, { files: u.files });
+      await IDB.updateUser(session.username, { passHash: await Crypto.hashPass(np) });
+
+      onSession({ ...session, passphrase: np });
+      setCur(""); setNp(""); setNp2("");
+      toast("Kata kunci diperbarui.");
+    } catch (e) { toast(e.message || "Gagal mengubah kata kunci.", "err"); }
+    setProg("");
+    setBusy("");
+  };
+
+  return (
+    <div style={{ maxWidth: 560 }} className="stack">
+      <div className="panel pad">
+        <div className="profile-head">
+          <Avatar src={avatar} name={session.username} large />
+          <div className="row">
+            <button className="btn btn-s btn-sm" onClick={() => fileRef.current.click()}>Ganti foto</button>
+            {avatar && <button className="btn btn-g btn-sm" onClick={removeAvatar}>Hapus</button>}
+            <input ref={fileRef} type="file" accept="image/*" hidden
+              onChange={e => { pickAvatar(e.target.files[0]); e.target.value = ""; }} />
+          </div>
+        </div>
+      </div>
+
+      <div className="panel pad">
+        <div className="field">
+          <label>Username</label>
+          <input value={name} onChange={e => setName(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && saveName()} />
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <button className="btn btn-p btn-sm" onClick={saveName}
+            disabled={busy === "name" || name.trim().toLowerCase() === session.username}>
+            Simpan
+          </button>
+        </div>
+      </div>
+
+      <div className="panel pad">
+        <div className="stack">
+          <div className="field">
+            <label>Kata kunci saat ini</label>
+            <input type="password" value={cur} onChange={e => setCur(e.target.value)} autoComplete="current-password" />
+          </div>
+          <div className="field">
+            <label>Kata kunci baru</label>
+            <input type="password" value={np} onChange={e => setNp(e.target.value)} autoComplete="new-password" />
+          </div>
+          <div className="field">
+            <label>Ulangi kata kunci baru</label>
+            <input type="password" value={np2} onChange={e => setNp2(e.target.value)} autoComplete="new-password" />
+          </div>
+        </div>
+        <div style={{ marginTop: 16 }}>
+          <button className="btn btn-p btn-sm" onClick={savePass} disabled={busy === "pass"}>
+            {busy === "pass" ? (prog ? `Mengenkripsi ulang ${prog}` : "Memproses...") : "Ubah kata kunci"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

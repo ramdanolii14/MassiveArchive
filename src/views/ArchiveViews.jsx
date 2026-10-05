@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from "react";
 import { Crypto } from "../crypto.js";
 import { IDB }    from "../database.js";
 import { fmtSize, CATS, STATUSES, fileTypeLabel } from "../utils.js";
+import { Avatar }          from "../components/Avatar.jsx";
+import { StorageCapsule }  from "../components/StorageCapsule.jsx";
 
 const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200 MB per berkas
 
@@ -17,7 +19,7 @@ function Empty({ title, text, action }) {
 
 // Dasbor
 
-export function Dashboard({ archives, session, onGo, onDetail }) {
+export function Dashboard({ archives, session, avatar, onGo, onDetail }) {
   const mine   = archives.filter(a => a.owner === session.username);
   const shared = archives.filter(a => a.owner !== session.username);
   const fileCount = mine.reduce((s, a) => s + (a.files?.length || 0), 0);
@@ -25,6 +27,11 @@ export function Dashboard({ archives, session, onGo, onDetail }) {
 
   return (
     <div>
+      <div className="dash-head">
+        <Avatar src={avatar} name={session.username} />
+        <div className="dash-name">{session.username}</div>
+      </div>
+
       <div className="stats">
         {[
           { lbl: "Arsip saya",        val: mine.length },
@@ -37,6 +44,8 @@ export function Dashboard({ archives, session, onGo, onDetail }) {
           </div>
         ))}
       </div>
+
+      <StorageCapsule />
 
       <div className="sec-hdr">
         <div className="sec-title">Terbaru</div>

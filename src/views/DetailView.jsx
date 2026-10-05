@@ -8,45 +8,61 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
   const [arc,       setArc]       = useState(null);
   const [prev,      setPrev]      = useState(null);
   const [decBusy,   setDecBusy]   = useState(null);
+  const [decStage,  setDecStage]  = useState("");
   const [shareOpen, setShareOpen] = useState(false);
   const [editOpen,  setEditOpen]  = useState(false);
 
-  const reload = () => IDB.get(recId).then(setArc);
+  const reload = () => IDB.getMeta(recId).then(setArc);
   useEffect(() => { reload(); }, [recId]);
 
   const isOwner   = arc?.owner === session.username;
   const canAccess = isOwner || (arc?.sharedWith || []).includes(session.username);
 
+  // Data berkas baru diambil dari server dan didekripsi saat dibuka.
   // Berkas dienkripsi dengan kata kunci pemilik. Penerima yang dibagikan
   // diminta memasukkan kata kunci pemilik bila kata kunci sendiri tidak cocok.
-  const decrypt = async (file) => {
+  const decrypt = async (file, idx) => {
     setDecBusy(file.name);
+    setDecStage("Mengambil berkas");
     try {
-      const plain = await Crypto.decrypt(file.encData, session.passphrase);
-      setDecBusy(null);
-      return new Blob([plain], { type: file.type });
-    } catch {
-      if (!isOwner) {
-        const ownerPass = window.prompt(`Masukkan kata kunci milik "${arc.owner}" untuk membuka berkas:`);
-        if (!ownerPass) { setDecBusy(null); return null; }
-        try {
-          const plain = await Crypto.decrypt(file.encData, ownerPass);
-          setDecBusy(null);
-          return new Blob([plain], { type: file.type });
-        } catch {
-          setDecBusy(null);
-          toast("Kata kunci salah.", "err");
-          return null;
-        }
+      let encData;
+      try { encData = await IDB.fileData(arc.id, idx); }
+      catch {
+        setDecBusy(null);
+        toast("Gagal mengambil berkas dari server.", "err");
+        return null;
       }
+      setDecStage("Mendekripsi");
+      try {
+        const plain = await Crypto.decrypt(encData, session.passphrase);
+        setDecBusy(null);
+        return new Blob([plain], { type: file.type });
+      } catch {
+        if (!isOwner) {
+          const ownerPass = window.prompt(`Masukkan kata kunci milik "${arc.owner}" untuk membuka berkas:`);
+          if (!ownerPass) { setDecBusy(null); return null; }
+          try {
+            const plain = await Crypto.decrypt(encData, ownerPass);
+            setDecBusy(null);
+            return new Blob([plain], { type: file.type });
+          } catch {
+            setDecBusy(null);
+            toast("Kata kunci salah.", "err");
+            return null;
+          }
+        }
+        setDecBusy(null);
+        toast("Gagal membuka berkas. Kata kunci tidak cocok.", "err");
+        return null;
+      }
+    } catch {
       setDecBusy(null);
-      toast("Gagal membuka berkas. Kata kunci tidak cocok.", "err");
       return null;
     }
   };
 
-  const download = async (file) => {
-    const blob = await decrypt(file);
+  const download = async (file, idx) => {
+    const blob = await decrypt(file, idx);
     if (!blob) return;
     const url = URL.createObjectURL(blob);
     const a   = document.createElement("a");
@@ -54,10 +70,10 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
     URL.revokeObjectURL(url);
   };
 
-  const preview = async (file) => {
-    const blob = await decrypt(file);
+  const preview = async (file, idx) => {
+    const blob = await decrypt(file, idx);
     if (!blob) return;
-    setPrev({ file, url: URL.createObjectURL(blob) });
+    setPrev({ file, idx, url: URL.createObjectURL(blob) });
   };
 
   const closePreview = () => {
@@ -159,12 +175,12 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
                   <div className="fi-sz">{fmtSize(file.size)}</div>
                   <div className="fcard-acts">
                     {canPreview(file.type) && (
-                      <button className="btn btn-s btn-sm" onClick={() => preview(file)}
+                      <button className="btn btn-s btn-sm" onClick={() => preview(file, i)}
                         disabled={decBusy === file.name}>
                         {decBusy === file.name ? "..." : "Lihat"}
                       </button>
                     )}
-                    <button className="btn btn-s btn-sm" onClick={() => download(file)}
+                    <button className="btn btn-s btn-sm" onClick={() => download(file, i)}
                       disabled={decBusy === file.name}>
                       {decBusy === file.name ? "..." : "Unduh"}
                     </button>
@@ -182,7 +198,7 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
             <div className="modal-hdr">
               <div className="modal-ttl">{prev.file.name}</div>
               <div className="row" style={{ flexShrink: 0 }}>
-                <button className="btn btn-s btn-sm" onClick={() => download(prev.file)}>Unduh</button>
+                <button className="btn btn-s btn-sm" onClick={() => download(prev.file, prev.idx)}>Unduh</button>
                 <button className="btn btn-g btn-sm" onClick={closePreview}>Tutup</button>
               </div>
             </div>
@@ -191,6 +207,17 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
               {prev.file.type?.startsWith("video/") && <video src={prev.url} controls />}
               {prev.file.type === "application/pdf" && <iframe src={prev.url} className="pdf-frame" title={prev.file.name} />}
             </div>
+          </div>
+        </div>
+      )}
+
+      {decBusy && (
+        <div className="ov dec-ov">
+          <div className="dec-card">
+            <div className="dec-ring" />
+            <div className="dec-title">{decStage}</div>
+            <div className="dec-name">{decBusy}</div>
+            <div className="dec-bar"><div /></div>
           </div>
         </div>
       )}

@@ -7,6 +7,7 @@ import { WelcomeScreen }  from "./components/WelcomeScreen.jsx";
 import { Dashboard, Browse, AddForm } from "./views/ArchiveViews.jsx";
 import { DetailView }     from "./views/DetailView.jsx";
 import { InboxView }      from "./views/InboxView.jsx";
+import { ProfileView }    from "./views/ProfileView.jsx";
 
 // ROOT APP
 
@@ -21,6 +22,7 @@ export default function App() {
   const [toast,    setToast]    = useState(null);
   const [confirm,  setConfirm]  = useState(null);
   const [inbox,    setInbox]    = useState([]);
+  const [avatar,   setAvatar]   = useState(null);
 
   // Inject CSS once
   useEffect(() => {
@@ -34,14 +36,21 @@ export default function App() {
   const load = useCallback(async () => {
     if (!session) return;
     try {
-      const accessible = await IDB.byOwner(session.username);
-      setArchives(accessible.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
+      const [list, msgs, me] = await Promise.all([
+        IDB.listMeta(),
+        IDB.getInbox(session.username),
+        IDB.getUser(session.username),
+      ]);
+      const newest = (a, b) => new Date(b.createdAt) - new Date(a.createdAt);
 
-      const meta = await IDB.getAllMeta();
-      setAllMeta(meta.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
-
-      const msgs = await IDB.getInbox(session.username);
+      setArchives(
+        list
+          .filter(a => a.owner === session.username || (a.sharedWith || []).includes(session.username))
+          .sort(newest)
+      );
+      setAllMeta(IDB.metaOf(list).sort(newest));
       setInbox(msgs.sort((a, b) => new Date(b.sentAt) - new Date(a.sentAt)));
+      setAvatar(me?.avatar || null);
     } catch { showToast("Gagal memuat data", "err"); }
     finally  { setLoading(false); }
   }, [session]);
@@ -107,6 +116,7 @@ export default function App() {
     setArchives([]);
     setAllMeta([]);
     setInbox([]);
+    setAvatar(null);
     setView("dashboard");
     setLoading(true);
   };
@@ -120,6 +130,7 @@ export default function App() {
     { id: "browse",    label: "Arsip" },
     { id: "add",       label: "Arsip Baru" },
     { id: "inbox",     label: "Kotak Masuk", count: unreadCount },
+    { id: "profile",   label: "Profil" },
   ];
 
   const titles = {
@@ -128,6 +139,7 @@ export default function App() {
     add:       "Arsip Baru",
     detail:    "Detail Arsip",
     inbox:     "Kotak Masuk",
+    profile:   "Profil",
   };
 
   return (
@@ -169,6 +181,7 @@ export default function App() {
             <Dashboard
               archives={filtered}
               session={session}
+              avatar={avatar}
               onGo={setView}
               onDetail={goDetail}
             />
@@ -202,6 +215,14 @@ export default function App() {
               onReload={load}
               toast={showToast}
               onDetail={goDetailFromInbox}
+            />
+          ) : view === "profile" ? (
+            <ProfileView
+              session={session}
+              avatar={avatar}
+              onAvatar={setAvatar}
+              onSession={setSession}
+              toast={showToast}
             />
           ) : null}
         </div>

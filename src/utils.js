@@ -2,7 +2,7 @@
 
 export const fmtSize = (b) => {
   if (!b) return "0 B";
-  const u = ["B", "KB", "MB", "GB"];
+  const u = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(b) / Math.log(1024));
   return `${(b / Math.pow(1024, i)).toFixed(1)} ${u[i]}`;
 };

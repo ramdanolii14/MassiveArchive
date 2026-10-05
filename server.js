@@ -68,9 +68,23 @@ function readCol(name) {
   }
 }
 
+// Cache metadata arsip (tanpa data berkas terenkripsi) agar daftar cepat dimuat
+let metaCache = null;
+
+function archivesMeta() {
+  if (!metaCache) {
+    metaCache = readCol("archives").map(a => ({
+      ...a,
+      files: (a.files || []).map(({ encData, ...f }) => f),
+    }));
+  }
+  return metaCache;
+}
+
 function writeCol(name, data) {
   const file = path.join(DB_DIR, `${name}.arsip`);
   fs.writeFileSync(file, encryptToDisk(JSON.stringify(data)));
+  if (name === "archives") metaCache = null;
 }
 
 function nextId(col) {
@@ -83,14 +97,26 @@ function nextId(col) {
 // ════════════════════════════════════════════════════════════════
 
 app.get("/api/archives", (req, res) => {
+  // ?meta=1 : tanpa data berkas terenkripsi
+  if (req.query.meta) return res.json(archivesMeta());
   res.json(readCol("archives"));
 });
 
 app.get("/api/archives/:id", (req, res) => {
   const id  = parseInt(req.params.id);
-  const arc = readCol("archives").find(a => a.id === id);
+  const src = req.query.meta ? archivesMeta() : readCol("archives");
+  const arc = src.find(a => a.id === id);
   if (!arc) return res.status(404).json({ error: "Tidak ditemukan" });
   res.json(arc);
+});
+
+// Data terenkripsi satu berkas, hanya diambil saat berkas dibuka
+app.get("/api/archives/:id/files/:idx", (req, res) => {
+  const id  = parseInt(req.params.id);
+  const arc = readCol("archives").find(a => a.id === id);
+  const f   = arc?.files?.[parseInt(req.params.idx)];
+  if (!f) return res.status(404).json({ error: "Tidak ditemukan" });
+  res.json({ encData: f.encData });
 });
 
 app.post("/api/archives", (req, res) => {
@@ -144,6 +170,62 @@ app.post("/api/users", (req, res) => {
   res.json(item);
 });
 
+app.patch("/api/users/:username", (req, res) => {
+  const users = readCol("users");
+  const idx   = users.findIndex(u => u.username === req.params.username);
+  if (idx === -1) return res.status(404).json({ error: "Tidak ditemukan" });
+
+  const oldName = users[idx].username;
+  const newName = req.body.username;
+
+  if (newName && newName !== oldName) {
+    if (!/^[a-z0-9_]{3,24}$/.test(newName)) {
+      return res.status(400).json({ error: "Username tidak valid" });
+    }
+    if (users.some(u => u.username === newName)) {
+      return res.status(409).json({ error: "Username sudah digunakan" });
+    }
+    const archives = readCol("archives").map(a => ({
+      ...a,
+      owner:      a.owner === oldName ? newName : a.owner,
+      sharedWith: (a.sharedWith || []).map(x => (x === oldName ? newName : x)),
+    }));
+    writeCol("archives", archives);
+    const inbox = readCol("inbox").map(i => ({
+      ...i,
+      from:      i.from === oldName ? newName : i.from,
+      recipient: i.recipient === oldName ? newName : i.recipient,
+    }));
+    writeCol("inbox", inbox);
+    users[idx].username = newName;
+  }
+
+  for (const k of ["avatar", "passHash"]) {
+    if (k in req.body) users[idx][k] = req.body[k];
+  }
+  writeCol("users", users);
+  const { passHash, ...safe } = users[idx];
+  res.json(safe);
+});
+
+// ════════════════════════════════════════════════════════════════
+// ROUTES — Storage
+// ════════════════════════════════════════════════════════════════
+
+app.get("/api/storage", (req, res) => {
+  let used = 0;
+  for (const f of fs.readdirSync(DB_DIR)) {
+    try { used += fs.statSync(path.join(DB_DIR, f)).size; } catch { /* abaikan */ }
+  }
+  let total = null, free = null;
+  try {
+    const s = fs.statfsSync(DB_DIR);
+    total = s.bsize * s.blocks;
+    free  = s.bsize * s.bavail;
+  } catch { /* statfs tidak tersedia */ }
+  res.json({ used, total, free });
+});
+
 // ════════════════════════════════════════════════════════════════
 // ROUTES — Inbox
 // ════════════════════════════════════════════════════════════════
@@ -183,6 +265,7 @@ app.delete("/api/inbox/:id", (req, res) => {
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
+  try { archivesMeta(); } catch { /* pemanasan cache, abaikan galat */ }
   console.log(`
 ╔══════════════════════════════════════════╗
 ║     Sistem Arsip Digital — Backend      ║

@@ -1,6 +1,4 @@
-// ════════════════════════════════════════════════════════════════
-// DATABASE LAYER — fetch ke Express backend
-// ════════════════════════════════════════════════════════════════
+// DATABASE LAYER - fetch ke Express backend
 
 const API = "/api";
 
@@ -24,17 +22,21 @@ export const IDB = {
   getAll: ()          => req("GET",    "/archives"),
   get:    (id)        => req("GET",    `/archives/${id}`),
   del:    (id)        => req("DELETE", `/archives/${id}`),
-  count:  async ()    => { const all = await req("GET", "/archives"); return all.length; },
+  count:  async ()    => { const all = await req("GET", "/archives?meta=1"); return all.length; },
+  listMeta: ()        => req("GET",    "/archives?meta=1"),
+  getMeta:  (id)      => req("GET",    `/archives/${id}?meta=1`),
+  fileData: async (id, idx) => (await req("GET", `/archives/${id}/files/${idx}`)).encData,
   update: (id, patch) => req("PATCH",  `/archives/${id}`, patch),
 
   byOwner: async (owner) => {
-    const all = await req("GET", "/archives");
+    const all = await req("GET", "/archives?meta=1");
     return all.filter(a => a.owner === owner || (a.sharedWith || []).includes(owner));
   },
 
-  getAllMeta: async () => {
-    const all = await req("GET", "/archives");
-    return all.map(a => ({
+  getAllMeta: async () => IDB.metaOf(await req("GET", "/archives?meta=1")),
+
+  metaOf: (all) =>
+    all.map(a => ({
       id:          a.id,
       archiveId:   a.archiveId,
       title:       a.title,
@@ -51,13 +53,16 @@ export const IDB = {
       sharedWith:  a.sharedWith || [],
       fileCount:   (a.files || []).length,
       totalSize:   (a.files || []).reduce((s, f) => s + f.size, 0),
-    }));
-  },
+    })),
 
   // ── Users ─────────────────────────────────────────────────
   getUser:    (username) => req("GET",  `/users/${username}`).catch(() => null),
   addUser:    (data)     => req("POST", "/users", data),
   getAllUsers: ()        => req("GET",  "/users"),
+  updateUser: (username, patch) => req("PATCH", `/users/${username}`, patch),
+
+  // ── Storage ───────────────────────────────────────────────
+  storage:    ()          => req("GET", "/storage"),
 
   // ── Inbox ─────────────────────────────────────────────────
   addInbox:   (data)      => req("POST",   "/inbox",           data),
