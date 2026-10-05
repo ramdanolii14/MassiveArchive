@@ -23,7 +23,39 @@ export function WelcomeScreen({ onLogin }) {
       if (!user) { setErr("Username tidak ditemukan."); setBusy(false); return; }
       const hash = await Crypto.hashPass(pass);
       if (hash !== user.passHash) { setErr("Kata kunci salah."); setBusy(false); return; }
-      onLogin({ username: user.username, passphrase: pass });
+
+      // Akun lama yang belum memiliki identitas kriptografi akan diprovisikan
+      // sekali saat login. Setelah itu public/private key tetap sama.
+      let identity;
+      try {
+        if (user.publicKey && user.privateKeyBox && user.keyId) {
+          identity = {
+            publicKey: user.publicKey,
+            keyId: user.keyId,
+            privateKey: await Crypto.unlockIdentity(user.privateKeyBox, pass),
+          };
+        } else {
+          const created = await Crypto.createIdentity(pass);
+          await IDB.updateUser(user.username, {
+            publicKey: created.publicKey,
+            keyId: created.keyId,
+            privateKeyBox: created.privateKeyBox,
+          });
+          identity = created;
+        }
+      } catch {
+        setErr("Gagal menyiapkan identitas keamanan akun.");
+        setBusy(false);
+        return;
+      }
+
+      onLogin({
+        username: user.username,
+        passphrase: pass,
+        publicKey: identity.publicKey,
+        keyId: identity.keyId,
+        identityPrivateKey: identity.privateKey,
+      });
     } catch { setErr("Terjadi kesalahan sistem."); }
     setBusy(false);
   };
@@ -41,12 +73,22 @@ export function WelcomeScreen({ onLogin }) {
       const exists = await IDB.getUser(username.trim().toLowerCase());
       if (exists) { setErr("Username sudah digunakan."); setBusy(false); return; }
       const passHash = await Crypto.hashPass(pass);
+      const identity = await Crypto.createIdentity(pass);
       await IDB.addUser({
         username:  username.trim().toLowerCase(),
         passHash,
+        publicKey: identity.publicKey,
+        keyId: identity.keyId,
+        privateKeyBox: identity.privateKeyBox,
         createdAt: new Date().toISOString(),
       });
-      onLogin({ username: username.trim().toLowerCase(), passphrase: pass });
+      onLogin({
+        username: username.trim().toLowerCase(),
+        passphrase: pass,
+        publicKey: identity.publicKey,
+        keyId: identity.keyId,
+        identityPrivateKey: identity.privateKey,
+      });
     } catch { setErr("Gagal membuat akun."); }
     setBusy(false);
   };

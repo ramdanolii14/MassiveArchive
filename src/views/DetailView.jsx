@@ -19,45 +19,42 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
   const isOwner   = arc?.owner === session.username;
   const canAccess = isOwner || (arc?.sharedWith || []).includes(session.username);
 
-  // Data berkas baru diambil dari server dan didekripsi saat dibuka.
-  // Berkas dienkripsi dengan kata kunci pemilik. Penerima yang dibagikan
-  // diminta memasukkan kata kunci pemilik bila kata kunci sendiri tidak cocok.
+  // Arsip baru/share-ready memakai archive key acak. Kunci arsip
+  // dibungkus khusus untuk setiap user dan dibuka dengan private key
+  // milik user tersebut. Arsip lama tetap didukung dengan passphrase.
   const decrypt = async (file, idx) => {
     setDecBusy(file.name);
     setDecStage("Mengambil berkas");
     try {
-      let encData;
-      try { encData = await IDB.fileData(arc.id, idx); }
-      catch {
-        setDecBusy(null);
-        toast("Gagal mengambil berkas dari server.", "err");
-        return null;
-      }
+      const encData = await IDB.fileData(arc.id, idx);
       setDecStage("Mendekripsi");
-      try {
-        const plain = await Crypto.decrypt(encData, session.passphrase);
-        setDecBusy(null);
-        return new Blob([plain], { type: file.type });
-      } catch {
-        if (!isOwner) {
-          const ownerPass = window.prompt(`Masukkan kata kunci milik "${arc.owner}" untuk membuka berkas:`);
-          if (!ownerPass) { setDecBusy(null); return null; }
-          try {
-            const plain = await Crypto.decrypt(encData, ownerPass);
-            setDecBusy(null);
-            return new Blob([plain], { type: file.type });
-          } catch {
-            setDecBusy(null);
-            toast("Kata kunci salah.", "err");
-            return null;
-          }
+
+      let plain;
+      if (arc.keyMode === "envelope-v1") {
+        const envelope = (arc.keyEnvelopes || []).find(
+          e => e.keyId === session.keyId
+        );
+        if (!envelope || !session.identityPrivateKey) {
+          throw new Error("Kunci pribadi akun tidak memiliki akses ke arsip ini.");
         }
-        setDecBusy(null);
-        toast("Gagal membuka berkas. Kata kunci tidak cocok.", "err");
-        return null;
+        const archiveKey = await Crypto.unwrapKey(
+          envelope.wrappedKey,
+          session.identityPrivateKey
+        );
+        plain = await Crypto.decryptWithKey(encData, archiveKey);
+      } else {
+        // Kompatibilitas dengan arsip sebelum sistem berbagi baru.
+        plain = await Crypto.decrypt(encData, session.passphrase);
       }
-    } catch {
+
       setDecBusy(null);
+      return new Blob([plain], { type: file.type });
+    } catch (e) {
+      setDecBusy(null);
+      toast(
+        e.message || "Gagal membuka berkas.",
+        "err"
+      );
       return null;
     }
   };
@@ -291,7 +288,16 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
       )}
 
       {shareOpen && (
-        <ShareModal arc={arc} session={session} onClose={() => setShareOpen(false)} toast={toast} onReload={onReload} />
+        <ShareModal
+          arc={arc}
+          session={session}
+          onClose={() => setShareOpen(false)}
+          toast={toast}
+          onReload={async () => {
+            await reload();
+            await onReload();
+          }}
+        />
       )}
     </div>
   );
@@ -305,40 +311,186 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
   const [sharedWith, setSharedWith] = useState(arc.sharedWith || []);
 
   useEffect(() => {
-    IDB.getAllUsers().then(u => setUsers(u.filter(x => x.username !== session.username)));
+    IDB.getAllUsers()
+      .then(u => setUsers(u.filter(x => x.username !== session.username)))
+      .catch(() => setUsers([]));
   }, [session.username]);
+
+  const findRecipient = () => users.find(u => u.username === recipient);
+
+  const buildEnvelope = async (username, user) => {
+    if (!user?.publicKey || !user?.keyId) {
+      throw new Error(
+        `Pengguna "${username}" belum menyiapkan kunci pribadi. Minta pengguna tersebut masuk ke akun sekali terlebih dahulu.`
+      );
+    }
+    return {
+      keyId: user.keyId,
+      username,
+      wrappedKey: null,
+    };
+  };
+
+  const upgradeLegacyArchive = async (fullArc, additionalUser) => {
+    const existingRecipients = Array.from(
+      new Set([session.username, ...(fullArc.sharedWith || []), recipient])
+    );
+
+    const userByName = new Map(users.map(u => [u.username, u]));
+    userByName.set(session.username, {
+      username: session.username,
+      keyId: session.keyId,
+      publicKey: session.publicKey,
+    });
+
+    for (const username of existingRecipients) {
+      const user = userByName.get(username);
+      if (!user?.publicKey || !user?.keyId) {
+        throw new Error(
+          `Pengguna "${username}" belum memiliki identitas keamanan. Pengguna tersebut harus masuk sekali sebelum arsip ini bisa dibagikan secara aman.`
+        );
+      }
+    }
+
+    const archiveKey = Crypto.randomContentKey();
+    const files = [];
+
+    for (const f of fullArc.files || []) {
+      const plain = await Crypto.decrypt(f.encData, session.passphrase);
+      files.push({
+        ...f,
+        encData: await Crypto.encryptWithKey(plain, archiveKey),
+      });
+    }
+
+    const keyEnvelopes = [];
+    for (const username of existingRecipients) {
+      const user = userByName.get(username);
+      const entry = await buildEnvelope(username, user);
+      entry.wrappedKey = await Crypto.wrapKey(archiveKey, user.publicKey);
+      keyEnvelopes.push(entry);
+    }
+
+    return {
+      ...fullArc,
+      keyMode: "envelope-v1",
+      keyEnvelopes,
+      files,
+      sharedWith: Array.from(
+        new Set([...(fullArc.sharedWith || []), additionalUser])
+      ),
+    };
+  };
 
   const handleShare = async () => {
     if (!recipient) { toast("Pilih penerima.", "err"); return; }
+    const target = findRecipient();
+    if (!target?.publicKey || !target?.keyId) {
+      toast(
+        `Pengguna "${recipient}" perlu masuk ke akun sekali agar kunci pribadinya dibuat.`,
+        "err"
+      );
+      return;
+    }
+
     setBusy(true);
     try {
-      const newShared = Array.from(new Set([...sharedWith, recipient]));
-      await IDB.update(arc.id, { sharedWith: newShared });
-      setSharedWith(newShared);
+      const current = await IDB.get(arc.id);
+      if (!current) throw new Error("Arsip tidak ditemukan.");
+
+      if (current.keyMode === "envelope-v1") {
+        const archiveEnvelope = (current.keyEnvelopes || []).find(
+          e => e.keyId === session.keyId
+        );
+        if (!archiveEnvelope || !session.identityPrivateKey) {
+          throw new Error("Kunci pribadi Anda tidak memiliki akses pemilik ke arsip.");
+        }
+
+        const archiveKey = await Crypto.unwrapKey(
+          archiveEnvelope.wrappedKey,
+          session.identityPrivateKey
+        );
+
+        const keyEnvelopes = [...(current.keyEnvelopes || [])];
+        const existingKey = keyEnvelopes.findIndex(
+          e => e.keyId === target.keyId
+        );
+
+        const wrappedKey = await Crypto.wrapKey(archiveKey, target.publicKey);
+        const entry = {
+          keyId: target.keyId,
+          username: recipient,
+          wrappedKey,
+        };
+
+        if (existingKey >= 0) keyEnvelopes[existingKey] = entry;
+        else keyEnvelopes.push(entry);
+
+        const newShared = Array.from(
+          new Set([...(current.sharedWith || []), recipient])
+        );
+
+        await IDB.update(current.id, {
+          sharedWith: newShared,
+          keyMode: "envelope-v1",
+          keyEnvelopes,
+        });
+      } else {
+        const upgraded = await upgradeLegacyArchive(current, recipient);
+        await IDB.update(current.id, upgraded);
+      }
+
       await IDB.addInbox({
         recipient,
-        from:         session.username,
-        archiveId:    arc.id,
-        archiveNum:   arc.archiveId,
+        from: session.username,
+        archiveId: arc.id,
+        archiveNum: arc.archiveId,
         archiveTitle: arc.title,
         message,
-        sentAt:       new Date().toISOString(),
-        read:         false,
+        sentAt: new Date().toISOString(),
+        read: false,
       });
+
+      const nextShared = Array.from(new Set([...sharedWith, recipient]));
+      setSharedWith(nextShared);
       await onReload();
-      toast("Dibagikan ke " + recipient);
+      toast(`Arsip dibagikan ke ${recipient}. Penerima tidak perlu kunci pemilik.`);
       setRecipient("");
       setMessage("");
-    } catch { toast("Gagal membagikan arsip.", "err"); }
+    } catch (e) {
+      toast(e.message || "Gagal membagikan arsip.", "err");
+    }
     setBusy(false);
   };
 
-  const removeShare = async (u) => {
-    const newShared = sharedWith.filter(x => x !== u);
-    await IDB.update(arc.id, { sharedWith: newShared });
-    setSharedWith(newShared);
-    await onReload();
-    toast("Akses " + u + " dicabut.");
+  const removeShare = async (username) => {
+    setBusy(true);
+    try {
+      const current = await IDB.get(arc.id);
+      if (!current) throw new Error("Arsip tidak ditemukan.");
+
+      const newShared = (current.sharedWith || []).filter(x => x !== username);
+      const patch = { sharedWith: newShared };
+
+      if (current.keyMode === "envelope-v1") {
+        const userRecord = users.find(u => u.username === username);
+        const keyId =
+          userRecord?.keyId ||
+          current.keyEnvelopes?.find(e => e.username === username)?.keyId;
+
+        patch.keyEnvelopes = keyId
+          ? (current.keyEnvelopes || []).filter(e => e.keyId !== keyId)
+          : (current.keyEnvelopes || []);
+      }
+
+      await IDB.update(current.id, patch);
+      setSharedWith(newShared);
+      await onReload();
+      toast("Akses " + username + " dicabut.");
+    } catch (e) {
+      toast(e.message || "Gagal mencabut akses.", "err");
+    }
+    setBusy(false);
   };
 
   return (
@@ -349,6 +501,11 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
           <button className="btn btn-g btn-sm" onClick={onClose}>Tutup</button>
         </div>
         <div className="modal-body">
+          <div className="note" style={{ marginBottom: 16 }}>
+            Penerima menggunakan <strong>kunci pribadi akunnya sendiri</strong>.
+            Password pemilik tidak pernah dibutuhkan untuk membuka arsip.
+          </div>
+
           {users.length === 0 ? (
             <div className="locked">Belum ada pengguna lain di perangkat ini.</div>
           ) : (
@@ -358,7 +515,11 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
                 <select value={recipient} onChange={e => setRecipient(e.target.value)}>
                   <option value="">Pilih pengguna</option>
                   {users.map(u => (
-                    <option key={u.username} value={u.username} disabled={sharedWith.includes(u.username)}>
+                    <option
+                      key={u.username}
+                      value={u.username}
+                      disabled={sharedWith.includes(u.username)}
+                    >
                       {u.username}{sharedWith.includes(u.username) ? " (sudah dibagikan)" : ""}
                     </option>
                   ))}
@@ -369,7 +530,7 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
                 <textarea value={message} onChange={e => setMessage(e.target.value)} rows={2} />
               </div>
               <button className="btn btn-p" onClick={handleShare} disabled={busy || !recipient}>
-                {busy ? "Membagikan..." : "Bagikan"}
+                {busy ? "Menyiapkan kunci..." : "Bagikan"}
               </button>
             </div>
           )}
@@ -380,8 +541,9 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
               <div className="flist" style={{ marginTop: 0 }}>
                 {sharedWith.map(u => (
                   <div key={u} className="fi">
+                    <Avatar src={users.find(x => x.username === u)?.avatar} name={u} />
                     <span className="grow">{u}</span>
-                    <button className="btn btn-d btn-sm" onClick={() => removeShare(u)}>Cabut</button>
+                    <button className="btn btn-d btn-sm" onClick={() => removeShare(u)} disabled={busy}>Cabut</button>
                   </div>
                 ))}
               </div>

@@ -258,7 +258,7 @@ app.delete("/api/archives/:id", (req, res) => {
 
 app.get("/api/users", (req, res) => {
   // Sembunyikan passHash saat list semua user
-  res.json(readCol("users").map(({ passHash, ...u }) => u));
+  res.json(readCol("users").map(({ passHash, privateKeyBox, ...u }) => u));
 });
 
 app.get("/api/users/:username", (req, res) => {
@@ -316,7 +316,7 @@ function patchUser(req, res) {
     users[idx].username = newName;
   }
 
-  for (const k of ["avatar", "passHash"]) {
+  for (const k of ["avatar", "passHash", "publicKey", "keyId", "privateKeyBox"]) {
     if (k in req.body) users[idx][k] = req.body[k];
   }
 
