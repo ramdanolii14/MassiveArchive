@@ -4,36 +4,70 @@ import { Crypto } from "../crypto.js";
 import { fmtSize, fmtDT, fileTypeLabel, fileExtension } from "../utils.js";
 import { EditForm } from "./ArchiveViews.jsx";
 import { Avatar } from "../components/Avatar.jsx";
+import { OfficePreview } from "../components/OfficePreview.jsx";
+import { logAudit } from "../audit.js";
+
+const defaultSharedPermissions = {
+  view: true,
+  download: true,
+  edit: false,
+  reshare: false,
+};
+
+function permissionsFor(arc, session) {
+  if (!arc || !session) return {};
+  if (arc.owner === session.username) {
+    return { view: true, download: true, edit: true, reshare: true };
+  }
+  const env = (arc.keyEnvelopes || []).find(e => e.keyId === session.keyId);
+  if (env) return { ...defaultSharedPermissions, ...(env.permissions || {}) };
+  return {};
+}
+
+function hasPermission(arc, session, key) {
+  return Boolean(permissionsFor(arc, session)[key]);
+}
+
+function permissionSummary(p) {
+  return [
+    p.view && "Lihat",
+    p.download && "Unduh",
+    p.edit && "Edit",
+    p.reshare && "Bagikan",
+  ].filter(Boolean).join(", ") || "Tidak ada akses";
+}
 
 export function DetailView({ recId, session, userAvatars, onBack, onDelete, toast, onReload }) {
-  const [arc,       setArc]       = useState(null);
-  const [prev,      setPrev]      = useState(null);
-  const [decBusy,   setDecBusy]   = useState(null);
-  const [decStage,  setDecStage]  = useState("");
+  const [arc, setArc] = useState(null);
+  const [prev, setPrev] = useState(null);
+  const [decBusy, setDecBusy] = useState(null);
+  const [decStage, setDecStage] = useState("");
   const [shareOpen, setShareOpen] = useState(false);
-  const [editOpen,  setEditOpen]  = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const reload = () => IDB.getMeta(recId).then(setArc);
-  useEffect(() => { reload(); }, [recId]);
+  useEffect(() => {
+    reload().catch(() => {});
+    logAudit(session, "view", { archiveId: recId });
+  }, [recId]);
 
-  const isOwner   = arc?.owner === session.username;
-  const canAccess = isOwner || (arc?.sharedWith || []).includes(session.username);
+  const isOwner = arc?.owner === session.username;
+  const perms = permissionsFor(arc, session);
+  const canView = isOwner || Boolean(perms.view);
+  const canDownload = isOwner || Boolean(perms.download);
+  const canEdit = isOwner || Boolean(perms.edit);
+  const canReshare = isOwner || Boolean(perms.reshare);
 
-  // Arsip baru/share-ready memakai archive key acak. Kunci arsip
-  // dibungkus khusus untuk setiap user dan dibuka dengan private key
-  // milik user tersebut. Arsip lama tetap didukung dengan passphrase.
   const decrypt = async (file, idx) => {
     setDecBusy(file.name);
     setDecStage("Mengambil berkas");
     try {
-      const encData = await IDB.fileData(arc.id, idx);
+      const encData = await IDB.fileData(arc.id, idx, session);
       setDecStage("Mendekripsi");
 
       let plain;
       if (arc.keyMode === "envelope-v1") {
-        const envelope = (arc.keyEnvelopes || []).find(
-          e => e.keyId === session.keyId
-        );
+        const envelope = (arc.keyEnvelopes || []).find(e => e.keyId === session.keyId);
         if (!envelope || !session.identityPrivateKey) {
           throw new Error("Kunci pribadi akun tidak memiliki akses ke arsip ini.");
         }
@@ -43,32 +77,39 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
         );
         plain = await Crypto.decryptWithKey(encData, archiveKey);
       } else {
-        // Kompatibilitas dengan arsip sebelum sistem berbagi baru.
         plain = await Crypto.decrypt(encData, session.passphrase);
       }
 
       setDecBusy(null);
-      return new Blob([plain], { type: file.type });
+      return new Blob([plain], { type: file.type || "application/octet-stream" });
     } catch (e) {
       setDecBusy(null);
-      toast(
-        e.message || "Gagal membuka berkas.",
-        "err"
-      );
+      toast(e.message || "Gagal membuka berkas.", "err");
       return null;
     }
   };
 
   const download = async (file, idx) => {
+    if (!canDownload) {
+      toast("Anda tidak memiliki izin mengunduh berkas ini.", "err");
+      return;
+    }
     const blob = await decrypt(file, idx);
     if (!blob) return;
     const url = URL.createObjectURL(blob);
-    const a   = document.createElement("a");
-    a.href = url; a.download = file.name; a.click();
-    URL.revokeObjectURL(url);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = file.name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    logAudit(session, "download", { archiveId: arc.id, title: arc.title, fileName: file.name });
   };
 
   const preview = async (file, idx) => {
+    if (!canView) {
+      toast("Anda tidak memiliki izin melihat arsip ini.", "err");
+      return;
+    }
     const blob = await decrypt(file, idx);
     if (!blob) return;
 
@@ -83,11 +124,12 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
       ["doc","docx","xls","xlsx","ppt","pptx","odt","ods","odp","rtf"].includes(ext) ? "office" :
       "binary";
 
+    const officeSupported = ["docx", "xlsx", "pptx"].includes(ext);
     let text = "";
     let hex = "";
     if (kind === "text") {
       text = await blob.text();
-    } else if (kind === "binary" || kind === "office") {
+    } else if ((kind === "binary" || kind === "office") && !officeSupported) {
       const bytes = new Uint8Array(await blob.slice(0, 8192).arrayBuffer());
       const lines = [];
       for (let i = 0; i < bytes.length; i += 16) {
@@ -100,9 +142,16 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
     }
 
     setPrev({
-      file, idx, kind, text, hex,
+      file,
+      idx,
+      kind,
+      officeSupported,
+      text,
+      hex,
+      blob,
       url: URL.createObjectURL(blob),
     });
+    logAudit(session, "preview", { archiveId: arc.id, title: arc.title, fileName: file.name });
   };
 
   const closePreview = () => {
@@ -110,12 +159,20 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
     setPrev(null);
   };
 
-  // Semua berkas mendapatkan tombol "Lihat". Format yang didukung browser
-  // dirender langsung; format lain tetap mendapat pratinjau data umum.\n  const canPreview = () => true;
-
   if (!arc) return <div className="loading">Memuat...</div>;
 
-  if (editOpen && isOwner) {
+  if (arc.deletedAt) {
+    return (
+      <div style={{ maxWidth: 760 }}>
+        <button className="btn btn-g btn-sm" style={{ marginBottom: 14 }} onClick={onBack}>Kembali</button>
+        <div className="panel pad">
+          <div className="locked">Arsip ini berada di Tempat Sampah.</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (editOpen && canEdit) {
     return (
       <EditForm
         session={session}
@@ -123,6 +180,7 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
         onSave={async () => {
           await reload();
           await onReload();
+          await logAudit(session, "edit", { archiveId: recId, title: arc.title });
           setEditOpen(false);
           toast("Perubahan disimpan.");
         }}
@@ -133,11 +191,11 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
 
   const fields = [
     ["Tanggal dokumen", arc.date],
-    ["Ditambahkan",     fmtDT(arc.createdAt)],
-    arc.author    && ["Penyusun", arc.author],
+    ["Ditambahkan", fmtDT(arc.createdAt)],
+    arc.author && ["Penyusun", arc.author],
     arc.reference && ["No. referensi", arc.reference],
-    arc.location  && ["Lokasi", arc.location],
-    !isOwner      && ["Pemilik", arc.owner],
+    arc.location && ["Lokasi", arc.location],
+    !isOwner && ["Pemilik", arc.owner],
   ].filter(Boolean);
 
   return (
@@ -158,17 +216,15 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
             </div>
             <div className="row" style={{ gap: 6 }}>
               {arc.category && <span className="badge">{arc.category}</span>}
-              {arc.status   && <span className="badge badge-line">{arc.status}</span>}
+              {arc.status && <span className="badge badge-line">{arc.status}</span>}
               {(arc.tags || []).map(t => <span key={t} className="badge badge-line">{t}</span>)}
             </div>
           </div>
-          {isOwner && (
-            <div className="row" style={{ justifyContent: "flex-end" }}>
-              <button className="btn btn-s btn-sm" onClick={() => setEditOpen(true)}>Edit</button>
-              <button className="btn btn-s btn-sm" onClick={() => setShareOpen(true)}>Bagikan</button>
-              <button className="btn btn-d btn-sm" onClick={() => onDelete(arc.id)}>Hapus</button>
-            </div>
-          )}
+          <div className="row" style={{ justifyContent: "flex-end" }}>
+            {canEdit && <button className="btn btn-s btn-sm" onClick={() => setEditOpen(true)}>Edit</button>}
+            {canReshare && <button className="btn btn-s btn-sm" onClick={() => setShareOpen(true)}>Bagikan</button>}
+            {isOwner && <button className="btn btn-d btn-sm" onClick={() => onDelete(arc.id)}>Hapus</button>}
+          </div>
         </div>
 
         <div className="dt-grid">
@@ -188,41 +244,47 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
           </div>
         )}
 
+        {!isOwner && (
+          <div className="note">
+            <div className="df-lbl" style={{ marginBottom: 4 }}>Izin Anda</div>
+            {permissionSummary(perms)}
+          </div>
+        )}
+
         <div className="files-title">Berkas ({arc.files?.length || 0})</div>
 
-        {!canAccess ? (
-          <div className="locked">
-            Hanya pemilik dan pengguna yang diberi akses yang bisa membuka berkas. Hubungi {arc.owner}.
-          </div>
+        {!canView ? (
+          <div className="locked">Anda tidak memiliki izin untuk melihat isi berkas ini.</div>
         ) : !arc.files?.length ? (
           <div className="locked">Tidak ada berkas.</div>
         ) : (
-          <>
-            {!isOwner && (
-              <div className="df-lbl" style={{ marginBottom: 12 }}>
-                Berkas ini memakai kata kunci milik {arc.owner}.
-              </div>
-            )}
-            <div className="fcards">
-              {arc.files.map((file, i) => (
-                <div key={i} className="fcard">
-                  <span className="fi-type">{fileTypeLabel(file.type)}</span>
-                  <div className="fcard-name">{file.name}</div>
-                  <div className="fi-sz">{fmtSize(file.size)}</div>
-                  <div className="fcard-acts">
-                    <button className="btn btn-s btn-sm" onClick={() => preview(file, i)}
-                      disabled={decBusy === file.name}>
-                      {decBusy === file.name ? "..." : "Lihat"}
-                    </button>
-                    <button className="btn btn-s btn-sm" onClick={() => download(file, i)}
-                      disabled={decBusy === file.name}>
+          <div className="fcards">
+            {arc.files.map((file, i) => (
+              <div key={i} className="fcard">
+                <span className="fi-type">{fileTypeLabel(file.type)}</span>
+                <div className="fcard-name">{file.name}</div>
+                <div className="fi-sz">{fmtSize(file.size)}</div>
+                <div className="fcard-acts">
+                  <button
+                    className="btn btn-s btn-sm"
+                    onClick={() => preview(file, i)}
+                    disabled={decBusy === file.name}
+                  >
+                    {decBusy === file.name ? "..." : "Lihat"}
+                  </button>
+                  {canDownload && (
+                    <button
+                      className="btn btn-s btn-sm"
+                      onClick={() => download(file, i)}
+                      disabled={decBusy === file.name}
+                    >
                       {decBusy === file.name ? "..." : "Unduh"}
                     </button>
-                  </div>
+                  )}
                 </div>
-              ))}
-            </div>
-          </>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 
@@ -232,14 +294,14 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
             <div className="modal-hdr">
               <div className="modal-ttl">{prev.file.name}</div>
               <div className="row" style={{ flexShrink: 0 }}>
-                <button className="btn btn-s btn-sm" onClick={() => download(prev.file, prev.idx)}>Unduh</button>
+                {canDownload && (
+                  <button className="btn btn-s btn-sm" onClick={() => download(prev.file, prev.idx)}>Unduh</button>
+                )}
                 <button className="btn btn-g btn-sm" onClick={closePreview}>Tutup</button>
               </div>
             </div>
             <div className="modal-body">
-              {prev.kind === "image" && (
-                <img src={prev.url} alt={prev.file.name} className="img-thumb" />
-              )}
+              {prev.kind === "image" && <img src={prev.url} alt={prev.file.name} className="img-thumb" />}
               {prev.kind === "video" && (
                 <video src={prev.url} controls playsInline style={{ maxWidth: "100%", maxHeight: "70vh" }} />
               )}
@@ -248,23 +310,21 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
                   <audio src={prev.url} controls style={{ width: "100%" }} />
                 </div>
               )}
-              {prev.kind === "pdf" && (
-                <iframe src={prev.url} className="pdf-frame" title={prev.file.name} />
-              )}
+              {prev.kind === "pdf" && <iframe src={prev.url} className="pdf-frame" title={prev.file.name} />}
               {prev.kind === "text" && (
                 <pre style={{ whiteSpace: "pre-wrap", overflow: "auto", maxHeight: "70vh", margin: 0 }}>
                   {prev.text}
                 </pre>
               )}
-              {(prev.kind === "office" || prev.kind === "binary") && (
+              {prev.kind === "office" && prev.officeSupported && (
+                <OfficePreview blob={prev.blob} fileName={prev.file.name} />
+              )}
+              {(prev.kind === "office" && !prev.officeSupported || prev.kind === "binary") && (
                 <div style={{ width: "100%" }}>
                   <div className="note">
                     <strong>Pratinjau data umum</strong><br />
-                    Format <strong>.{fileExtension(prev.file.name) || "bin"}</strong>
-                    {prev.kind === "office"
-                      ? " tidak dapat dirender penuh oleh browser tanpa mesin Office."
-                      : " tidak memiliki renderer universal di browser."}
-                    <br />Bagian berikut menampilkan byte awal berkas untuk memastikan isi berhasil dibaca dan didekripsi.
+                    Format <strong>.{fileExtension(prev.file.name) || "bin"}</strong> belum memiliki renderer lokal yang kompatibel.
+                    <br />Byte awal berkas ditampilkan untuk memastikan isi berhasil dibaca dan didekripsi.
                   </div>
                   <pre style={{ whiteSpace: "pre-wrap", overflow: "auto", maxHeight: "55vh", marginTop: 12 }}>
                     {prev.hex || "(berkas kosong)"}
@@ -287,7 +347,7 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
         </div>
       )}
 
-      {shareOpen && (
+      {shareOpen && canReshare && (
         <ShareModal
           arc={arc}
           session={session}
@@ -304,10 +364,11 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
 }
 
 export function ShareModal({ arc, session, onClose, toast, onReload }) {
-  const [recipient,  setRecipient]  = useState("");
-  const [message,    setMessage]    = useState("");
-  const [busy,       setBusy]       = useState(false);
-  const [users,      setUsers]      = useState([]);
+  const [recipient, setRecipient] = useState("");
+  const [message, setMessage] = useState("");
+  const [permissions, setPermissions] = useState({ ...defaultSharedPermissions });
+  const [busy, setBusy] = useState(false);
+  const [users, setUsers] = useState([]);
   const [sharedWith, setSharedWith] = useState(arc.sharedWith || []);
 
   useEffect(() => {
@@ -318,7 +379,23 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
 
   const findRecipient = () => users.find(u => u.username === recipient);
 
-  const buildEnvelope = async (username, user) => {
+  const setRecipientAndLoad = username => {
+    setRecipient(username);
+    if (!username) {
+      setPermissions({ ...defaultSharedPermissions });
+      return;
+    }
+    const target = users.find(u => u.username === username);
+    const current = (arc.keyEnvelopes || []).find(e =>
+      e.keyId === target?.keyId || e.username === username
+    );
+    setPermissions({
+      ...defaultSharedPermissions,
+      ...(current?.permissions || {}),
+    });
+  };
+
+  const buildEnvelope = (username, user, nextPermissions) => {
     if (!user?.publicKey || !user?.keyId) {
       throw new Error(
         `Pengguna "${username}" belum menyiapkan kunci pribadi. Minta pengguna tersebut masuk ke akun sekali terlebih dahulu.`
@@ -328,14 +405,21 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
       keyId: user.keyId,
       username,
       wrappedKey: null,
+      permissions: { ...defaultSharedPermissions, ...nextPermissions },
     };
+  };
+
+  const legacyPermissionsFor = (fullArc, username, nextPermissions) => {
+    const env = (fullArc.keyEnvelopes || []).find(e => e.username === username);
+    if (username === recipient) return { ...defaultSharedPermissions, ...nextPermissions };
+    if (env?.permissions) return { ...defaultSharedPermissions, ...env.permissions };
+    return { view: true, download: true, edit: true, reshare: true };
   };
 
   const upgradeLegacyArchive = async (fullArc, additionalUser) => {
     const existingRecipients = Array.from(
-      new Set([session.username, ...(fullArc.sharedWith || []), recipient])
+      new Set([session.username, ...(fullArc.sharedWith || []), additionalUser])
     );
-
     const userByName = new Map(users.map(u => [u.username, u]));
     userByName.set(session.username, {
       username: session.username,
@@ -354,7 +438,6 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
 
     const archiveKey = Crypto.randomContentKey();
     const files = [];
-
     for (const f of fullArc.files || []) {
       const plain = await Crypto.decrypt(f.encData, session.passphrase);
       files.push({
@@ -366,7 +449,11 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
     const keyEnvelopes = [];
     for (const username of existingRecipients) {
       const user = userByName.get(username);
-      const entry = await buildEnvelope(username, user);
+      const entry = buildEnvelope(
+        username,
+        user,
+        legacyPermissionsFor(fullArc, username, username === additionalUser ? permissions : {})
+      );
       entry.wrappedKey = await Crypto.wrapKey(archiveKey, user.publicKey);
       keyEnvelopes.push(entry);
     }
@@ -376,14 +463,14 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
       keyMode: "envelope-v1",
       keyEnvelopes,
       files,
-      sharedWith: Array.from(
-        new Set([...(fullArc.sharedWith || []), additionalUser])
-      ),
+      sharedWith: Array.from(new Set([...(fullArc.sharedWith || []), additionalUser])),
     };
   };
 
   const handleShare = async () => {
     if (!recipient) { toast("Pilih penerima.", "err"); return; }
+    if (!permissions.view) { toast("Izin Lihat wajib diaktifkan.", "err"); return; }
+
     const target = findRecipient();
     if (!target?.publicKey || !target?.keyId) {
       toast(
@@ -395,13 +482,11 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
 
     setBusy(true);
     try {
-      const current = await IDB.get(arc.id);
+      const current = await IDB.get(arc.id, session);
       if (!current) throw new Error("Arsip tidak ditemukan.");
 
       if (current.keyMode === "envelope-v1") {
-        const archiveEnvelope = (current.keyEnvelopes || []).find(
-          e => e.keyId === session.keyId
-        );
+        const archiveEnvelope = (current.keyEnvelopes || []).find(e => e.keyId === session.keyId);
         if (!archiveEnvelope || !session.identityPrivateKey) {
           throw new Error("Kunci pribadi Anda tidak memiliki akses pemilik ke arsip.");
         }
@@ -412,16 +497,9 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
         );
 
         const keyEnvelopes = [...(current.keyEnvelopes || [])];
-        const existingKey = keyEnvelopes.findIndex(
-          e => e.keyId === target.keyId
-        );
-
+        const existingKey = keyEnvelopes.findIndex(e => e.keyId === target.keyId);
         const wrappedKey = await Crypto.wrapKey(archiveKey, target.publicKey);
-        const entry = {
-          keyId: target.keyId,
-          username: recipient,
-          wrappedKey,
-        };
+        const entry = buildEnvelope(recipient, target, permissions);
 
         if (existingKey >= 0) keyEnvelopes[existingKey] = entry;
         else keyEnvelopes.push(entry);
@@ -434,10 +512,10 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
           sharedWith: newShared,
           keyMode: "envelope-v1",
           keyEnvelopes,
-        });
+        }, session);
       } else {
         const upgraded = await upgradeLegacyArchive(current, recipient);
-        await IDB.update(current.id, upgraded);
+        await IDB.update(current.id, upgraded, session);
       }
 
       await IDB.addInbox({
@@ -451,11 +529,16 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
         read: false,
       });
 
+      await logAudit(session, "share", {
+        archiveId: arc.id,
+        title: arc.title,
+        recipient,
+        permissions: { ...permissions },
+      });
       const nextShared = Array.from(new Set([...sharedWith, recipient]));
       setSharedWith(nextShared);
       await onReload();
-      toast(`Arsip dibagikan ke ${recipient}. Penerima tidak perlu kunci pemilik.`);
-      setRecipient("");
+      toast(`Arsip dibagikan ke ${recipient}.`);
       setMessage("");
     } catch (e) {
       toast(e.message || "Gagal membagikan arsip.", "err");
@@ -463,27 +546,31 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
     setBusy(false);
   };
 
-  const removeShare = async (username) => {
+  const removeShare = async username => {
     setBusy(true);
     try {
-      const current = await IDB.get(arc.id);
+      const current = await IDB.get(arc.id, session);
       if (!current) throw new Error("Arsip tidak ditemukan.");
 
       const newShared = (current.sharedWith || []).filter(x => x !== username);
+      const userRecord = users.find(u => u.username === username);
+      const keyId =
+        userRecord?.keyId ||
+        current.keyEnvelopes?.find(e => e.username === username)?.keyId;
+
       const patch = { sharedWith: newShared };
-
       if (current.keyMode === "envelope-v1") {
-        const userRecord = users.find(u => u.username === username);
-        const keyId =
-          userRecord?.keyId ||
-          current.keyEnvelopes?.find(e => e.username === username)?.keyId;
-
         patch.keyEnvelopes = keyId
           ? (current.keyEnvelopes || []).filter(e => e.keyId !== keyId)
           : (current.keyEnvelopes || []);
       }
 
-      await IDB.update(current.id, patch);
+      await IDB.update(current.id, patch, session);
+      await logAudit(session, "revoke", {
+        archiveId: arc.id,
+        title: arc.title,
+        recipient: username,
+      });
       setSharedWith(newShared);
       await onReload();
       toast("Akses " + username + " dicabut.");
@@ -495,60 +582,97 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
 
   return (
     <div className="ov" onClick={onClose}>
-      <div className="modal modal-sm" onClick={e => e.stopPropagation()}>
+      <div className="modal modal-sm share-modal" onClick={e => e.stopPropagation()}>
         <div className="modal-hdr">
           <div className="modal-ttl">Bagikan arsip</div>
           <button className="btn btn-g btn-sm" onClick={onClose}>Tutup</button>
         </div>
         <div className="modal-body">
-          <div className="note" style={{ marginBottom: 16 }}>
-            Penerima menggunakan <strong>kunci pribadi akunnya sendiri</strong>.
-            Password pemilik tidak pernah dibutuhkan untuk membuka arsip.
+          <div className="note">
+            Penerima memakai kunci pribadi akunnya sendiri. Pilih izin yang diberikan.
           </div>
 
-          {users.length === 0 ? (
-            <div className="locked">Belum ada pengguna lain di perangkat ini.</div>
-          ) : (
-            <div className="stack">
-              <div className="field">
-                <label>Penerima</label>
-                <select value={recipient} onChange={e => setRecipient(e.target.value)}>
-                  <option value="">Pilih pengguna</option>
-                  {users.map(u => (
-                    <option
-                      key={u.username}
-                      value={u.username}
-                      disabled={sharedWith.includes(u.username)}
-                    >
-                      {u.username}{sharedWith.includes(u.username) ? " (sudah dibagikan)" : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="field">
-                <label>Pesan (opsional)</label>
-                <textarea value={message} onChange={e => setMessage(e.target.value)} rows={2} />
-              </div>
-              <button className="btn btn-p" onClick={handleShare} disabled={busy || !recipient}>
-                {busy ? "Menyiapkan kunci..." : "Bagikan"}
-              </button>
+          <div className="stack">
+            <div className="field">
+              <label>Penerima</label>
+              <select value={recipient} onChange={e => setRecipientAndLoad(e.target.value)}>
+                <option value="">Pilih pengguna</option>
+                {users.map(u => <option key={u.username} value={u.username}>{u.username}</option>)}
+              </select>
             </div>
-          )}
 
-          {sharedWith.length > 0 && (
-            <div style={{ marginTop: 22 }}>
-              <div className="df-lbl" style={{ marginBottom: 8 }}>Sudah dibagikan ke</div>
-              <div className="flist" style={{ marginTop: 0 }}>
-                {sharedWith.map(u => (
-                  <div key={u} className="fi">
-                    <Avatar src={users.find(x => x.username === u)?.avatar} name={u} />
-                    <span className="grow">{u}</span>
-                    <button className="btn btn-d btn-sm" onClick={() => removeShare(u)} disabled={busy}>Cabut</button>
-                  </div>
+            {recipient && (
+              <div className="permission-grid">
+                {[
+                  ["view", "Lihat", "Boleh membuka dan melihat berkas"],
+                  ["download", "Unduh", "Boleh mengunduh berkas"],
+                  ["edit", "Edit", "Boleh mengubah metadata dan berkas"],
+                  ["reshare", "Bagikan", "Boleh membagikan lagi ke pengguna lain"],
+                ].map(([key, label, desc]) => (
+                  <label key={key} className="permission-item">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(permissions[key])}
+                      onChange={e => setPermissions(p => ({ ...p, [key]: e.target.checked }))}
+                    />
+                    <span>
+                      <strong>{label}</strong>
+                      <small>{desc}</small>
+                    </span>
+                  </label>
                 ))}
               </div>
+            )}
+
+            <div className="field">
+              <label>Pesan</label>
+              <textarea value={message} onChange={e => setMessage(e.target.value)} rows={3}
+                placeholder="Pesan untuk penerima (opsional)" />
             </div>
-          )}
+
+            <button className="btn btn-p" onClick={handleShare} disabled={busy || !recipient}>
+              {busy ? "Memproses..." : "Simpan akses"}
+            </button>
+
+            <div>
+              <div className="df-lbl" style={{ marginBottom: 8 }}>Pengguna yang sudah diberi akses</div>
+              {sharedWith.length === 0 ? (
+                <div className="td-sub">Belum ada.</div>
+              ) : (
+                <div className="stack share-list">
+                  {sharedWith.map(username => {
+                    const target = users.find(u => u.username === username);
+                    const env = (arc.keyEnvelopes || []).find(e =>
+                      e.keyId === target?.keyId || e.username === username
+                    );
+                    const p = { ...defaultSharedPermissions, ...(env?.permissions || {}) };
+                    return (
+                      <div key={username} className="share-row">
+                        <div className="grow">
+                          <div className="td-title">{username}</div>
+                          <div className="td-sub">{permissionSummary(p)}</div>
+                        </div>
+                        <button
+                          className="btn btn-g btn-sm"
+                          disabled={busy}
+                          onClick={() => setRecipientAndLoad(username)}
+                        >
+                          Atur
+                        </button>
+                        <button
+                          className="btn btn-d btn-sm"
+                          disabled={busy}
+                          onClick={() => removeShare(username)}
+                        >
+                          Cabut
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
