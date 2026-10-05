@@ -4,8 +4,10 @@ import fs       from "fs";
 import path     from "path";
 import crypto   from "crypto";
 import { fileURLToPath } from "url";
+import dotenv   from "dotenv";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, ".env") });
 const app       = express();
 
 // ── Batas ukuran request 500mb (untuk file besar base64) ──────
@@ -14,7 +16,15 @@ app.use(express.json({ limit: "500mb" }));
 app.use(express.urlencoded({ limit: "500mb", extended: true }));
 
 // ── Konfigurasi ───────────────────────────────────────────────
-const SERVER_KEY = process.env.SERVER_KEY || "ganti-ini-dengan-kunci-rahasia-server";
+const SERVER_KEY = process.env.SERVER_KEY;
+if (!SERVER_KEY || SERVER_KEY.length < 8) {
+  console.error(
+    "\n[FATAL] SERVER_KEY belum diset (atau kurang dari 8 karakter).\n" +
+    "Buat file .env di folder yang sama dengan server.js, contoh:\n" +
+    "  SERVER_KEY=password_kuat_kamu\n  PORT=3001\n"
+  );
+  process.exit(1);
+}
 const DB_DIR     = path.join(__dirname, "database");
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });

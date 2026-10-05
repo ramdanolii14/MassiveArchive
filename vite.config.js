@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  // Inline config: cegah Vite mencari postcss.config.* di folder induk
+  css: { postcss: {} },
   server: {
     proxy: {
       "/api": {

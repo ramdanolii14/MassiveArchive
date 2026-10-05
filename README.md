@@ -5,7 +5,7 @@ MassiveArchive is a secure, local-first file archiving system that provides end-
 Please Report to [My Email](mailto:developer@nyanpixel.my.id) Or Go To The Issues Tab And Open It, If You Encounter Any Kind Bug.
 
 ## Core Architecture
-- **Cryptographic Processing:** Utilizes AES-256 via Crypto.js.
+- **Cryptographic Processing:** Utilizes AES-256-GCM via Node.js built-in `crypto` module.
 - **File System Management:** Appends `.arsip` extension to the encrypted payload.
 - **Local State Tracking:** Records file metadata inside a dedicated local database.
 
@@ -18,7 +18,7 @@ Please Report to [My Email](mailto:developer@nyanpixel.my.id) Or Go To The Issue
 ## Technology Stack
 - Frontend: React.js
 - Backend: Node.js, Express.js
-- Cryptography: Crypto.js
+- Cryptography: Node.js `crypto` (AES-256-GCM)
 
 ## Installation
 
@@ -33,14 +33,13 @@ npm install
 ```
 **3. Setup your .env**
 ```bash
-#make sure to create your .env file
-#in to the same directory with server.js
-SERVER_KEY=your_strong_password_here #this is like master key, so don't forget this key at all. I'm serious
+#copy .env.example to .env (same directory as server.js)
+SERVER_KEY=your_strong_password_here #master key, min. 8 chars. Don't lose it. I'm serious
 PORT=3001
 ```
 **4. Run the application**
 ```bash
-npm start run
+npm start
 ```
 ---  
 Peluk Keamanan xD  
