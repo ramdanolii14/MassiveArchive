@@ -322,7 +322,7 @@ app.post("/api/auth/register", (req, res) => {
   users.push(item);
   writeCol("users", users);
   const token = createSession(item.id);
-  setSessionCookie(res, token);
+  setSessionCookie(res, token, req);
   res.status(201).json(authUser(item));
 });
 
@@ -334,7 +334,7 @@ app.post("/api/auth/recover", (req, res) => {
     return res.status(401).json({ error: "Recovery Key tidak valid." });
   }
   const token = createSession(user.id);
-  setSessionCookie(res, token);
+  setSessionCookie(res, token, req);
   res.json(authUser(user, true));
 });
 
