@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { IDB }    from "../database.js";
 import { Crypto } from "../crypto.js";
-import { fmtSize, fmtDT, fileTypeLabel } from "../utils.js";
+import { fmtSize, fmtDT, fileTypeLabel, fileExtension } from "../utils.js";
 import { EditForm } from "./ArchiveViews.jsx";
 
 export function DetailView({ recId, session, onBack, onDelete, toast, onReload }) {
@@ -73,7 +73,38 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
   const preview = async (file, idx) => {
     const blob = await decrypt(file, idx);
     if (!blob) return;
-    setPrev({ file, idx, url: URL.createObjectURL(blob) });
+
+    const ext = fileExtension(file.name);
+    const type = (file.type || "").toLowerCase();
+    const kind =
+      type.startsWith("image/") || ["jpg","jpeg","png","gif","webp","svg","bmp","ico","avif"].includes(ext) ? "image" :
+      type.startsWith("video/") || ["mp4","webm","ogv","ogg","mov","m4v","mkv","avi","flv","wmv","3gp","mpeg","mpg","ts"].includes(ext) ? "video" :
+      type.startsWith("audio/") || ["mp3","m4a","flac","wav","ogg","oga","opus","aac","wma","aiff"].includes(ext) ? "audio" :
+      type === "application/pdf" || ext === "pdf" ? "pdf" :
+      type.startsWith("text/") || ["txt","md","csv","log","json","xml","yaml","yml","html","htm","css","js","jsx","ts","tsx","svg"].includes(ext) ? "text" :
+      ["doc","docx","xls","xlsx","ppt","pptx","odt","ods","odp","rtf"].includes(ext) ? "office" :
+      "binary";
+
+    let text = "";
+    let hex = "";
+    if (kind === "text") {
+      text = await blob.text();
+    } else if (kind === "binary" || kind === "office") {
+      const bytes = new Uint8Array(await blob.slice(0, 8192).arrayBuffer());
+      const lines = [];
+      for (let i = 0; i < bytes.length; i += 16) {
+        const row = Array.from(bytes.slice(i, i + 16))
+          .map(b => b.toString(16).padStart(2, "0"))
+          .join(" ");
+        lines.push(row);
+      }
+      hex = lines.join("\n");
+    }
+
+    setPrev({
+      file, idx, kind, text, hex,
+      url: URL.createObjectURL(blob),
+    });
   };
 
   const closePreview = () => {
@@ -81,8 +112,8 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
     setPrev(null);
   };
 
-  const canPreview = (type = "") =>
-    type.startsWith("image/") || type.startsWith("video/") || type === "application/pdf";
+  // Semua berkas mendapatkan tombol "Lihat". Format yang didukung browser
+  // dirender langsung; format lain tetap mendapat pratinjau data umum.\n  const canPreview = () => true;
 
   if (!arc) return <div className="loading">Memuat...</div>;
 
@@ -174,12 +205,10 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
                   <div className="fcard-name">{file.name}</div>
                   <div className="fi-sz">{fmtSize(file.size)}</div>
                   <div className="fcard-acts">
-                    {canPreview(file.type) && (
-                      <button className="btn btn-s btn-sm" onClick={() => preview(file, i)}
-                        disabled={decBusy === file.name}>
-                        {decBusy === file.name ? "..." : "Lihat"}
-                      </button>
-                    )}
+                    <button className="btn btn-s btn-sm" onClick={() => preview(file, i)}
+                      disabled={decBusy === file.name}>
+                      {decBusy === file.name ? "..." : "Lihat"}
+                    </button>
                     <button className="btn btn-s btn-sm" onClick={() => download(file, i)}
                       disabled={decBusy === file.name}>
                       {decBusy === file.name ? "..." : "Unduh"}
@@ -203,9 +232,40 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
               </div>
             </div>
             <div className="modal-body">
-              {prev.file.type?.startsWith("image/") && <img src={prev.url} alt={prev.file.name} className="img-thumb" />}
-              {prev.file.type?.startsWith("video/") && <video src={prev.url} controls />}
-              {prev.file.type === "application/pdf" && <iframe src={prev.url} className="pdf-frame" title={prev.file.name} />}
+              {prev.kind === "image" && (
+                <img src={prev.url} alt={prev.file.name} className="img-thumb" />
+              )}
+              {prev.kind === "video" && (
+                <video src={prev.url} controls playsInline style={{ maxWidth: "100%", maxHeight: "70vh" }} />
+              )}
+              {prev.kind === "audio" && (
+                <div style={{ width: "100%", padding: "30px 10px" }}>
+                  <audio src={prev.url} controls style={{ width: "100%" }} />
+                </div>
+              )}
+              {prev.kind === "pdf" && (
+                <iframe src={prev.url} className="pdf-frame" title={prev.file.name} />
+              )}
+              {prev.kind === "text" && (
+                <pre style={{ whiteSpace: "pre-wrap", overflow: "auto", maxHeight: "70vh", margin: 0 }}>
+                  {prev.text}
+                </pre>
+              )}
+              {(prev.kind === "office" || prev.kind === "binary") && (
+                <div style={{ width: "100%" }}>
+                  <div className="note">
+                    <strong>Pratinjau data umum</strong><br />
+                    Format <strong>.{fileExtension(prev.file.name) || "bin"}</strong>
+                    {prev.kind === "office"
+                      ? " tidak dapat dirender penuh oleh browser tanpa mesin Office."
+                      : " tidak memiliki renderer universal di browser."}
+                    <br />Bagian berikut menampilkan byte awal berkas untuk memastikan isi berhasil dibaca dan didekripsi.
+                  </div>
+                  <pre style={{ whiteSpace: "pre-wrap", overflow: "auto", maxHeight: "55vh", marginTop: 12 }}>
+                    {prev.hex || "(berkas kosong)"}
+                  </pre>
+                </div>
+              )}
             </div>
           </div>
         </div>

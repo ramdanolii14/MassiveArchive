@@ -10,7 +10,9 @@ async function req(method, path, body) {
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(err.error || res.statusText);
+    const error = new Error(err.error || res.statusText);
+    error.status = res.status;
+    throw error;
   }
   const text = await res.text();
   return text ? JSON.parse(text) : null;
@@ -56,17 +58,27 @@ export const IDB = {
     })),
 
   // ── Users ─────────────────────────────────────────────────
-  getUser:    (username) => req("GET",  `/users/${username}`).catch(() => null),
+  getUser:    (username) => req("GET",  `/users/${encodeURIComponent(username)}`).catch(() => null),
   addUser:    (data)     => req("POST", "/users", data),
   getAllUsers: ()        => req("GET",  "/users"),
-  updateUser: (username, patch) => req("PATCH", `/users/${username}`, patch),
+  updateUser: async (username, patch) => {
+    const encoded = encodeURIComponent(username);
+    try {
+      return await req("PATCH", `/users/${encoded}`, patch);
+    } catch (e) {
+      if (e.status === 404 || e.status === 405) {
+        return req("POST", `/users/${encoded}/update`, patch);
+      }
+      throw e;
+    }
+  },
 
   // ── Storage ───────────────────────────────────────────────
   storage:    ()          => req("GET", "/storage"),
 
   // ── Inbox ─────────────────────────────────────────────────
   addInbox:   (data)      => req("POST",   "/inbox",           data),
-  getInbox:   (recipient) => req("GET",    `/inbox?recipient=${recipient}`),
+  getInbox:   (recipient) => req("GET",    `/inbox?recipient=${encodeURIComponent(recipient)}`),
   delInbox:   (id)        => req("DELETE", `/inbox/${id}`),
   markRead:   (id)        => req("PATCH",  `/inbox/${id}/read`),
 };

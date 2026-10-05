@@ -79,14 +79,16 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
         toast("Kata kunci saat ini salah.", "err"); setBusy(""); return;
       }
 
-      // Berkas dienkripsi dengan kata kunci, jadi semua berkas milik sendiri dienkripsi ulang.
-      // Seluruhnya diproses di memori dulu, baru ditulis, agar tidak setengah jadi.
-      const all  = await IDB.getAll();
-      const mine = all.filter(a => a.owner === session.username && a.files?.length);
-      const total = mine.reduce((s, a) => s + a.files.length, 0);
+      // Ambil metadata ringan terlebih dahulu. Setiap arsip kemudian
+      // diproses dari shard-nya sendiri sehingga perubahan kata kunci
+      // tidak lagi memuat satu database besar ke memori sekaligus.
+      const metas = await IDB.listMeta();
+      const mine  = metas.filter(a => a.owner === session.username && a.files?.length > 0);
+      const total = mine.reduce((s, a) => s + (a.fileCount || 0), 0);
       let n = 0;
-      const updates = [];
-      for (const arc of mine) {
+      for (const meta of mine) {
+        const arc = await IDB.get(meta.id);
+        if (!arc?.files?.length) continue;
         const files = [];
         for (const f of arc.files) {
           setProg(`${++n}/${total}`);
@@ -95,9 +97,8 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
           catch { throw new Error(`Tidak bisa membuka "${f.name}". Perubahan dibatalkan.`); }
           files.push({ ...f, encData: await Crypto.encrypt(plain, np) });
         }
-        updates.push({ id: arc.id, files });
+        await IDB.update(arc.id, { files });
       }
-      for (const u of updates) await IDB.update(u.id, { files: u.files });
       await IDB.updateUser(session.username, { passHash: await Crypto.hashPass(np) });
 
       onSession({ ...session, passphrase: np });
