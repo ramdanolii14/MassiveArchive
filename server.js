@@ -697,36 +697,23 @@ app.delete("/api/archives/:id/permanent", (req, res) => {
 // ════════════════════════════════════════════════════════════════
 
 app.get("/api/users", (req, res) => {
-  // Sembunyikan passHash saat list semua user
-  res.json(readCol("users").map(({ passHash, privateKeyBox, ...u }) => u));
+  res.json(readCol("users").map(publicUser));
 });
 
 app.get("/api/users/:username", (req, res) => {
-  const user = readCol("users").find(u => u.username === req.params.username);
+  const username = decodeURIComponent(req.params.username || "").trim().toLowerCase();
+  const user = findUserByUsername(username);
   if (!user) return res.status(404).json({ error: "Tidak ditemukan" });
-  // Sertakan passHash — dibutuhkan frontend untuk verifikasi login lokal
-  res.json(user);
-});
-
-app.post("/api/users", (req, res) => {
-  const col = readCol("users");
-  if (col.find(u => u.username === req.body.username)) {
-    return res.status(409).json({ error: "Username sudah digunakan" });
-  }
-  const item = { ...req.body, id: nextId(col) };
-  col.push(item);
-  writeCol("users", col);
-  res.json(item);
+  res.json(user.id === req.user.id ? user : publicUser(user));
 });
 
 function patchUser(req, res) {
   const users = readCol("users");
-  const username = decodeURIComponent(req.params.username || "");
-  const idx = users.findIndex(u => u.username === username);
+  const idx = users.findIndex(u => u.id === req.user.id);
   if (idx === -1) return res.status(404).json({ error: "Pengguna tidak ditemukan" });
 
   const oldName = users[idx].username;
-  const newName = typeof req.body.username === "string"
+  const newName = typeof req.body?.username === "string"
     ? req.body.username.trim().toLowerCase()
     : undefined;
 
@@ -734,12 +721,10 @@ function patchUser(req, res) {
     if (!/^[a-z0-9_]{3,24}$/.test(newName)) {
       return res.status(400).json({ error: "Username tidak valid" });
     }
-    if (users.some(u => u.username === newName)) {
+    if (users.some(u => u.username === newName && u.id !== req.user.id)) {
       return res.status(409).json({ error: "Username sudah digunakan" });
     }
 
-    // Rename hanya metadata index, bukan payload berkas. Ini menghindari
-    // penulisan ulang arsip besar saat pengguna sekadar mengganti username.
     const updatedIndex = archivesMeta().map(a => ({
       ...a,
       owner: a.owner === oldName ? newName : a.owner,
@@ -756,30 +741,16 @@ function patchUser(req, res) {
     users[idx].username = newName;
   }
 
-  for (const k of ["avatar", "passHash", "publicKey", "keyId", "privateKeyBox"]) {
+  for (const k of ["avatar", "passHash", "publicKey", "keyId", "privateKeyBox", "recoveryHash", "recoveryKeyBox"]) {
     if (k in req.body) users[idx][k] = req.body[k];
   }
 
   writeCol("users", users);
-  const { passHash, ...safe } = users[idx];
-  res.json(safe);
+  res.json(req.user.id === users[idx].id ? users[idx] : publicUser(users[idx]));
 }
 
-app.patch("/api/users/:username", patchUser);
-// Fallback POST supaya update profil tetap dapat bekerja pada host/proxy
-// yang bermasalah meneruskan method PATCH.
+app.post("/api/profile", patchUser);
 app.post("/api/users/:username/update", patchUser);
-
-// Endpoint profil tanpa username di URL. Ini menjadi jalur utama frontend
-// untuk menghindari masalah routing/proxy terhadap parameter path atau PATCH.
-app.post("/api/profile", (req, res) => {
-  const username = typeof req.body?.username === "string"
-    ? req.body.username.trim().toLowerCase()
-    : "";
-  if (!username) return res.status(400).json({ error: "Username wajib diisi" });
-  req.params.username = username;
-  return patchUser(req, res);
-});
 
 // ════════════════════════════════════════════════════════════════
 // ROUTES — Storage
@@ -805,13 +776,21 @@ app.get("/api/storage", (req, res) => {
 
 app.get("/api/inbox", (req, res) => {
   const col = readCol("inbox");
-  const { recipient } = req.query;
-  res.json(recipient ? col.filter(i => i.recipient === recipient) : col);
+  res.json(col.filter(i => i.recipient === req.user.username));
 });
 
 app.post("/api/inbox", (req, res) => {
-  const col  = readCol("inbox");
-  const item = { ...req.body, id: nextId(col) };
+  const col = readCol("inbox");
+  const recipient = String(req.body?.recipient || "").trim().toLowerCase();
+  if (!recipient) return res.status(400).json({ error: "Penerima wajib diisi." });
+  const target = findUserByUsername(recipient);
+  if (!target) return res.status(404).json({ error: "Penerima tidak ditemukan." });
+  const item = {
+    ...req.body,
+    id: nextId(col),
+    from: req.user.username,
+    recipient,
+  };
   col.push(item);
   writeCol("inbox", col);
   res.json(item);
@@ -819,7 +798,7 @@ app.post("/api/inbox", (req, res) => {
 
 app.patch("/api/inbox/:id/read", (req, res) => {
   const col = readCol("inbox");
-  const idx = col.findIndex(i => i.id === parseInt(req.params.id));
+  const idx = col.findIndex(i => i.id === parseInt(req.params.id, 10) && i.recipient === req.user.username);
   if (idx === -1) return res.status(404).json({ error: "Tidak ditemukan" });
   col[idx].read = true;
   writeCol("inbox", col);
@@ -827,8 +806,8 @@ app.patch("/api/inbox/:id/read", (req, res) => {
 });
 
 app.delete("/api/inbox/:id", (req, res) => {
-  const id = parseInt(req.params.id);
-  writeCol("inbox", readCol("inbox").filter(i => i.id !== id));
+  const id = parseInt(req.params.id, 10);
+  writeCol("inbox", readCol("inbox").filter(i => !(i.id === id && i.recipient === req.user.username)));
   res.json({ ok: true });
 });
 
@@ -837,10 +816,9 @@ app.delete("/api/inbox/:id", (req, res) => {
 // ════════════════════════════════════════════════════════════════
 
 app.get("/api/audit", (req, res) => {
-  const username = typeof req.query.username === "string" ? req.query.username.trim().toLowerCase() : "";
   const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
   const list = readCol("audit")
-    .filter(x => !username || x.username === username)
+    .filter(x => x.userId === req.user.id || (!x.userId && x.username === req.user.username))
     .sort((a, b) => new Date(b.at) - new Date(a.at))
     .slice(0, limit);
   res.json(list);
@@ -850,12 +828,12 @@ app.post("/api/audit", (req, res) => {
   const col = readCol("audit");
   const item = {
     id: nextId(col),
-    username: String(req.body?.username || "").trim().toLowerCase(),
+    userId: req.user.id,
+    username: req.user.username,
     action: String(req.body?.action || "unknown").slice(0, 80),
     details: req.body?.details && typeof req.body.details === "object" ? req.body.details : {},
     at: req.body?.at || new Date().toISOString(),
   };
-  if (!item.username) return res.status(400).json({ error: "Username wajib diisi." });
   col.push(item);
   writeCol("audit", col.slice(-1000));
   res.json(item);
