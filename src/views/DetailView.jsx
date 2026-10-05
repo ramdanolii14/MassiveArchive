@@ -413,7 +413,7 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
     const env = (fullArc.keyEnvelopes || []).find(e => e.username === username);
     if (username === recipient) return { ...defaultSharedPermissions, ...nextPermissions };
     if (env?.permissions) return { ...defaultSharedPermissions, ...env.permissions };
-    return { view: true, download: true, edit: true, reshare: true };
+    return { view: true, download: true, edit: false, reshare: false };
   };
 
   const upgradeLegacyArchive = async (fullArc, additionalUser) => {
