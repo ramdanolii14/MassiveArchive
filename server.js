@@ -223,6 +223,7 @@ function createSession(userId, options = {}) {
   sessions.set(token, {
     userId,
     recoveryAuthorized: Boolean(options.recoveryAuthorized),
+    securityBootstrap: Boolean(options.securityBootstrap),
     expiresAt: Date.now() + SESSION_TTL,
   });
   return token;
@@ -298,7 +299,7 @@ app.post("/api/auth/login", (req, res) => {
   if (!user || !passHash || user.passHash !== passHash) {
     return res.status(401).json({ error: "Username atau kata kunci salah." });
   }
-  const token = createSession(user.id);
+  const token = createSession(user.id, { securityBootstrap: true });
   setSessionCookie(res, token, req);
   res.json(authUser(user));
 });
@@ -804,7 +805,11 @@ function patchUser(req, res) {
   ];
   const changingSecurity = securityFields.some(k => k in req.body);
 
-  if (changingSecurity && !sessions.get(req.sessionToken)?.recoveryAuthorized) {
+  const sessionRecord = sessions.get(req.sessionToken);
+  const securityAuthorized =
+    sessionRecord?.recoveryAuthorized || sessionRecord?.securityBootstrap;
+
+  if (changingSecurity && !securityAuthorized) {
     const currentPassHash = String(req.body?.currentPassHash || "");
     if (!currentPassHash || currentPassHash !== users[idx].passHash) {
       return res.status(403).json({ error: "Kata kunci lama tidak valid." });
@@ -815,8 +820,10 @@ function patchUser(req, res) {
     if (k in req.body) users[idx][k] = req.body[k];
   }
   if (changingSecurity) {
-    const sessionRecord = sessions.get(req.sessionToken);
-    if (sessionRecord) sessionRecord.recoveryAuthorized = false;
+    if (sessionRecord) {
+      sessionRecord.recoveryAuthorized = false;
+      sessionRecord.securityBootstrap = false;
+    }
   }
 
   writeCol("users", users);
