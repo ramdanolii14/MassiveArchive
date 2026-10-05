@@ -217,7 +217,13 @@ function archivePermissions(arc, actorKeyId, actorUsername) {
   const envelope = (arc.keyEnvelopes || []).find(e =>
     (actorKeyId && e.keyId === actorKeyId) || e.username === actorUsername
   );
-  return envelope?.permissions || {};
+  return {
+    view: true,
+    download: true,
+    edit: false,
+    reshare: false,
+    ...(envelope?.permissions || {}),
+  };
 }
 
 function canReadArchive(arc, actorKeyId, actorUsername) {
@@ -442,7 +448,14 @@ app.get("/api/archives/:id/files/:idx", (req, res) => {
   const username = String(req.query.username || "").trim().toLowerCase();
   const keyId = String(req.query.keyId || "");
   const perms = archivePermissions(arc, keyId, username);
-  if (!perms.view) return res.status(403).json({ error: "Anda tidak memiliki izin melihat berkas ini." });
+  const purpose = req.query.purpose === "download" ? "download" : "view";
+  if (!perms[purpose]) {
+    return res.status(403).json({
+      error: purpose === "download"
+        ? "Anda tidak memiliki izin mengunduh berkas ini."
+        : "Anda tidak memiliki izin melihat berkas ini."
+    });
+  }
 
   const f = arc.files?.[idx];
   if (!f) return res.status(404).json({ error: "Tidak ditemukan" });
