@@ -4,7 +4,6 @@ import { IDB }    from "../database.js";
 import { fmtSize, CATS, STATUSES, fileTypeLabel } from "../utils.js";
 import { Avatar }          from "../components/Avatar.jsx";
 import { StorageCapsule }  from "../components/StorageCapsule.jsx";
-import { logAudit }        from "../audit.js";
 
 const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200 MB per berkas
 
@@ -470,7 +469,7 @@ export function EditForm({ session, arcId, onSave, onCancel }) {
   const up = (k, v) => setF(p => ({ ...p, [k]: v }));
 
   useEffect(() => {
-    IDB.get(arcId).then(a => {
+    IDB.get(arcId, session).then(a => {
       if (!a) return;
       setArc(a);
       setExistingFiles(a.files || []);
@@ -540,7 +539,7 @@ export function EditForm({ session, arcId, onSave, onCancel }) {
         keyEnvelopes: nextEnvelopes,
         files: [...keptFiles, ...encNew],
         updatedAt: new Date().toISOString(),
-      });
+      }, session);
       onSave();
     } catch (e) {
       alert("Gagal menyimpan perubahan: " + e.message);
