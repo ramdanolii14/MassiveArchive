@@ -32,6 +32,7 @@ const LEGACY_ARCHIVES = path.join(DB_DIR, "archives.arsip");
 const PAYLOAD_DIR     = path.join(DB_DIR, "payloads");
 const UPLOAD_DIR      = path.join(DB_DIR, "uploads");
 const MAX_FILE_SIZE   = 200 * 1024 * 1024;
+const MAX_UPLOAD_SIZE = MAX_FILE_SIZE + 1024 * 1024;
 const UPLOAD_CHUNK    = 4 * 1024 * 1024;
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
@@ -223,8 +224,9 @@ function createSession(userId) {
   return token;
 }
 
-function setSessionCookie(res, token) {
-  const secure = process.env.NODE_ENV === "production";
+function setSessionCookie(res, token, req = null) {
+  const forwarded = String(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim();
+  const secure = process.env.NODE_ENV === "production" || forwarded === "https";
   const parts = [
     `ma_session=${encodeURIComponent(token)}` ,
     "Path=/",
@@ -293,7 +295,7 @@ app.post("/api/auth/login", (req, res) => {
     return res.status(401).json({ error: "Username atau kata kunci salah." });
   }
   const token = createSession(user.id);
-  setSessionCookie(res, token);
+  setSessionCookie(res, token, req);
   res.json(authUser(user));
 });
 
@@ -512,7 +514,7 @@ function materializeUploads(files, archiveId, userId) {
 
 app.post("/api/uploads", (req, res) => {
   const size = Number(req.body?.size);
-  if (!Number.isFinite(size) || size < 0 || size > MAX_FILE_SIZE) {
+  if (!Number.isFinite(size) || size < 0 || size > MAX_UPLOAD_SIZE) {
     return res.status(400).json({ error: "Ukuran berkas tidak valid atau melebihi 200 MB." });
   }
   const uploadId = newUploadId();
@@ -671,9 +673,25 @@ app.patch("/api/archives/:id", (req, res) => {
     return res.status(403).json({ error: "Anda tidak memiliki izin untuk mengubah arsip ini." });
   }
 
-  const body = { ...req.body };
-  delete body.actor;
-  delete body.actorKeyId;
+  const rawBody = { ...req.body };
+  delete rawBody.actor;
+  delete rawBody.actorKeyId;
+
+  const owner = current.owner === actor;
+  const allowedEdit = [
+    "title", "date", "category", "description", "tags",
+    "location", "author", "reference", "notes", "status",
+    "files", "updatedAt"
+  ];
+  const allowedShare = ["sharedWith", "keyEnvelopes", "updatedAt"];
+  const keys = owner
+    ? Object.keys(rawBody).filter(k => k !== "id" && k !== "owner" && k !== "deletedAt")
+    : action === "reshare" ? allowedShare : allowedEdit;
+  const body = {};
+  for (const key of keys) {
+    if (key in rawBody) body[key] = rawBody[key];
+  }
+
   const item = { ...current, ...body, id };
   if (Array.isArray(item.files)) {
     try { item.files = materializeUploads(item.files, id, req.user.id); }
