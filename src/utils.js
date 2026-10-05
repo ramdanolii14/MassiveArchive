@@ -1,6 +1,4 @@
-// ════════════════════════════════════════════════════════════════
 // UTILITIES & CONSTANTS
-// ════════════════════════════════════════════════════════════════
 
 export const fmtSize = (b) => {
   if (!b) return "0 B";
@@ -52,6 +50,6 @@ export const passStrength = (p) => {
   if (/[0-9]/.test(p))                         s++;
   if (/[^A-Za-z0-9]/.test(p))                 s++;
   const labels = ["", "Lemah", "Sedang", "Baik", "Kuat", "Sangat Kuat"];
-  const colors = ["#ccc", "#c0392b", "#e67e22", "#2980b9", "#27ae60", "#1e8449"];
+  const colors = ["#ccc", "#b4b9c1", "#8f959f", "#6b717b", "#444a54", "#23272e"];
   return { score: s, label: labels[s] || "", color: colors[s] || "#ccc" };
 };

@@ -3,10 +3,6 @@ import { IDB }         from "../database.js";
 import { Crypto }      from "../crypto.js";
 import { passStrength } from "../utils.js";
 
-// ════════════════════════════════════════════════════════════════
-// WELCOME / AUTH SCREEN
-// ════════════════════════════════════════════════════════════════
-
 export function WelcomeScreen({ onLogin }) {
   const [tab,      setTab]      = useState("login");
   const [username, setUsername] = useState("");
@@ -36,7 +32,7 @@ export function WelcomeScreen({ onLogin }) {
     setErr("");
     if (!username.trim()) { setErr("Username wajib diisi."); return; }
     if (!/^[a-z0-9_]{3,24}$/.test(username.trim().toLowerCase())) {
-      setErr("Username 3-24 karakter, huruf kecil/angka/garis bawah."); return;
+      setErr("Username 3 sampai 24 karakter: huruf kecil, angka, atau garis bawah."); return;
     }
     if (pass.length < 8) { setErr("Kata kunci minimal 8 karakter."); return; }
     if (pass !== pass2)  { setErr("Konfirmasi kata kunci tidak cocok."); return; }
@@ -55,117 +51,64 @@ export function WelcomeScreen({ onLogin }) {
     setBusy(false);
   };
 
+  const submit = () => (tab === "login" ? handleLogin() : handleRegister());
+  const onEnter = e => e.key === "Enter" && submit();
+
   return (
-    <div className="welcome-wrap">
-      <div className="welcome-left">
-        <div className="welcome-seal">ARSIP</div>
-        <div className="welcome-brand">
-          Sistem Arsip Digital
-          <span>DIGITAL ARCHIVE SYSTEM</span>
-        </div>
-        <div className="welcome-desc">
-          Semua berkas dienkripsi dengan AES-256-GCM.<br/>
-          Hanya pemegang kata kunci yang dapat membuka arsip.<br/><br/>
-          Data tersimpan lokal di perangkat Anda.<br/>
-          Tidak ada server. Tidak ada pihak ketiga.
-        </div>
-      </div>
+    <div className="auth-wrap">
+      <div className="auth-card">
+        <div className="auth-title">MassiveArchive</div>
+        <div className="auth-sub">Arsip terenkripsi di perangkat Anda.</div>
 
-      <div className="welcome-right">
-        <div className="welcome-card">
-          <h2>Akses Arsip</h2>
-          <p className="sub">Masuk atau buat akun baru untuk menggunakan sistem arsip terenkripsi.</p>
+        <div className="seg">
+          <button className={tab === "login" ? "act" : ""}
+            onClick={() => { setTab("login"); setErr(""); }}>Masuk</button>
+          <button className={tab === "register" ? "act" : ""}
+            onClick={() => { setTab("register"); setErr(""); }}>Daftar</button>
+        </div>
 
-          <div className="wc-tabs">
-            <button className={`wc-tab${tab === "login" ? " act" : ""}`}
-              onClick={() => { setTab("login"); setErr(""); }}>Masuk</button>
-            <button className={`wc-tab${tab === "register" ? " act" : ""}`}
-              onClick={() => { setTab("register"); setErr(""); }}>Daftar Akun</button>
+        <div className="auth-fields">
+          <div className="field">
+            <label>Username</label>
+            <input value={username} onChange={e => setUsername(e.target.value)}
+              onKeyDown={onEnter} autoComplete="username" />
           </div>
-
-          <div className="fgrid" style={{ gridTemplateColumns: "1fr", gap: "14px" }}>
-            <div className="fg">
-              <label>Username</label>
-              <input
-                value={username}
-                onChange={e => setUsername(e.target.value)}
-                placeholder="contoh: budi_santoso"
-                onKeyDown={e => e.key === "Enter" && tab === "login" && handleLogin()}
-                autoComplete="username"
-              />
+          <div className="field">
+            <label>Kata kunci</label>
+            <div className="pw">
+              <input type={showP ? "text" : "password"} value={pass}
+                onChange={e => setPass(e.target.value)} onKeyDown={onEnter}
+                autoComplete={tab === "login" ? "current-password" : "new-password"} />
+              <button type="button" onClick={() => setShowP(p => !p)}>
+                {showP ? "Sembunyi" : "Lihat"}
+              </button>
             </div>
-            <div className="fg">
-              <label>Kata Kunci Enkripsi</label>
-              <div className="pass-input-wrap">
-                <input
-                  type={showP ? "text" : "password"}
-                  value={pass}
-                  onChange={e => setPass(e.target.value)}
-                  placeholder={tab === "login" ? "Masukkan kata kunci..." : "Buat kata kunci kuat..."}
-                  onKeyDown={e => e.key === "Enter" && tab === "login" && handleLogin()}
-                  autoComplete={tab === "login" ? "current-password" : "new-password"}
-                />
-                <button className="pass-toggle" onClick={() => setShowP(p => !p)} type="button">
-                  {showP ? "SEMB" : "LIHAT"}
-                </button>
-              </div>
-              {tab === "register" && pass && (
-                <>
-                  <div className="strength-bar">
-                    <div className="strength-fill"
-                      style={{ width: `${(strength.score / 5) * 100}%`, background: strength.color }} />
-                  </div>
-                  <div style={{ fontFamily: "var(--fm)", fontSize: "10px", color: strength.color, marginTop: "2px" }}>
-                    {strength.label}
-                  </div>
-                </>
-              )}
-            </div>
-            {tab === "register" && (
-              <div className="fg">
-                <label>Konfirmasi Kata Kunci</label>
-                <input
-                  type={showP ? "text" : "password"}
-                  value={pass2}
-                  onChange={e => setPass2(e.target.value)}
-                  placeholder="Ulangi kata kunci..."
-                  autoComplete="new-password"
-                />
+            {tab === "register" && pass && (
+              <div className="strength">
+                <div style={{ width: `${(strength.score / 5) * 100}%` }} />
               </div>
             )}
           </div>
-
-          {err && (
-            <div style={{
-              marginTop: "14px", padding: "9px 12px",
-              background: "var(--red-bg)", border: "1px solid #e09090",
-              fontFamily: "var(--fm)", fontSize: "11.5px", color: "var(--red)",
-            }}>{err}</div>
-          )}
-
-          <div style={{ marginTop: "20px" }}>
-            {tab === "login"
-              ? <button className="btn btn-p" style={{ width: "100%", justifyContent: "center" }}
-                  onClick={handleLogin} disabled={busy}>
-                  {busy ? "Memverifikasi..." : "Masuk ke Arsip"}
-                </button>
-              : <button className="btn btn-p" style={{ width: "100%", justifyContent: "center" }}
-                  onClick={handleRegister} disabled={busy}>
-                  {busy ? "Membuat Akun..." : "Buat Akun & Masuk"}
-                </button>
-            }
-          </div>
-
           {tab === "register" && (
-            <div style={{
-              marginTop: "14px", fontFamily: "var(--fm)",
-              fontSize: "10px", color: "var(--ink4)", lineHeight: "1.8",
-            }}>
-              CATATAN: Kata kunci digunakan untuk mengenkripsi seluruh berkas Anda.<br/>
-              Jika kata kunci lupa, data tidak dapat dipulihkan. Simpan dengan baik.
+            <div className="field">
+              <label>Ulangi kata kunci</label>
+              <input type={showP ? "text" : "password"} value={pass2}
+                onChange={e => setPass2(e.target.value)} onKeyDown={onEnter}
+                autoComplete="new-password" />
             </div>
           )}
         </div>
+
+        {err && <div className="err">{err}</div>}
+
+        <button className="btn btn-p" style={{ width: "100%", marginTop: 20 }}
+          onClick={submit} disabled={busy}>
+          {busy ? "Memproses..." : tab === "login" ? "Masuk" : "Buat akun"}
+        </button>
+
+        {tab === "register" && (
+          <div className="hint">Kata kunci tidak bisa dipulihkan jika lupa.</div>
+        )}
       </div>
     </div>
   );

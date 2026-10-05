@@ -2,16 +2,13 @@ import { useState, useEffect, useCallback } from "react";
 
 import { CSS }            from "./styles.js";
 import { IDB }            from "./database.js";
-import { Crypto }         from "./crypto.js";
-import { fmtSize, genId } from "./utils.js";
+import { genId }          from "./utils.js";
 import { WelcomeScreen }  from "./components/WelcomeScreen.jsx";
 import { Dashboard, Browse, AddForm } from "./views/ArchiveViews.jsx";
 import { DetailView }     from "./views/DetailView.jsx";
 import { InboxView }      from "./views/InboxView.jsx";
 
-// ════════════════════════════════════════════════════════════════
 // ROOT APP
-// ════════════════════════════════════════════════════════════════
 
 export default function App() {
   const [session,  setSession]  = useState(null); // { username, passphrase }
@@ -88,14 +85,14 @@ export default function App() {
         createdAt: new Date().toISOString(),
       });
       await load();
-      showToast("Arsip berhasil disimpan.");
+      showToast("Arsip disimpan.");
       setView("browse");
     } catch { showToast("Gagal menyimpan arsip.", "err"); }
   };
 
   const handleDelete = (id) => askConfirm(
-    "Hapus Arsip",
-    "Arsip dan semua berkas terlampir akan dihapus permanen. Lanjutkan?",
+    "Hapus arsip?",
+    "Arsip dan semua berkasnya akan dihapus permanen.",
     async () => {
       await IDB.del(id);
       await load();
@@ -119,108 +116,58 @@ export default function App() {
   if (!session) return <WelcomeScreen onLogin={setSession} />;
 
   const navs = [
-    { id: "dashboard", label: "Dasbor",       ic: "◈" },
-    { id: "browse",    label: "Semua Arsip",   ic: "≡" },
-    { id: "add",       label: "Arsip Baru",    ic: "+" },
-    { id: "inbox",     label: `Berbagi${unreadCount ? ` (${unreadCount})` : ""}`, ic: "✉" },
+    { id: "dashboard", label: "Dasbor" },
+    { id: "browse",    label: "Arsip" },
+    { id: "add",       label: "Arsip Baru" },
+    { id: "inbox",     label: "Kotak Masuk", count: unreadCount },
   ];
+
+  const titles = {
+    dashboard: "Dasbor",
+    browse:    "Arsip",
+    add:       "Arsip Baru",
+    detail:    "Detail Arsip",
+    inbox:     "Kotak Masuk",
+  };
 
   return (
     <div className="app">
-      {/* ── Sidebar ── */}
       <nav className="sb">
-        <div className="sb-head">
-          <div className="sb-logo">
-            Sistem Arsip
-            <small>Digital Archive System</small>
-          </div>
-          <div className="sb-user">
-            <div className="sb-avatar">{session.username[0].toUpperCase()}</div>
-            <div className="sb-uname">{session.username}</div>
-          </div>
-        </div>
-
+        <div className="sb-brand">MassiveArchive</div>
         <div className="sb-nav">
-          <div className="sb-sec">
-            <div className="sb-sec-lbl">Navigasi</div>
-            {navs.map(n => (
-              <div key={n.id}
-                className={`nav-item${view === n.id || (view === "detail" && n.id === "browse") ? " act" : ""}`}
-                onClick={() => setView(n.id)}>
-                <span className="nav-ic">{n.ic}</span>{n.label}
-              </div>
-            ))}
-          </div>
-
-          <div className="sb-sec">
-            <div className="sb-sec-lbl">Info Arsip Saya</div>
-            <div className="nav-item" style={{ cursor: "default", fontSize: "12.5px" }}>
-              <span className="nav-ic">#</span>
-              {archives.filter(a => a.owner === session.username).length} Arsip
-            </div>
-            <div className="nav-item" style={{ cursor: "default", fontSize: "12.5px" }}>
-              <span className="nav-ic">∑</span>
-              {fmtSize(
-                archives
-                  .filter(a => a.owner === session.username)
-                  .reduce((s, a) => (a.files || []).reduce((ss, f) => ss + f.size, s), 0)
-              )}
-            </div>
-          </div>
-
-          <div className="sb-sec">
-            <div className="sb-sec-lbl">Sistem</div>
-            <div className="nav-item" style={{ cursor: "default", fontSize: "12.5px" }}>
-              <span className="nav-ic">#</span>
-              {allMeta.length} Total Arsip
-            </div>
-            <div className="nav-item" style={{ cursor: "default", fontSize: "12.5px" }}>
-              <span className="nav-ic">∑</span>
-              {fmtSize(allMeta.reduce((s, a) => s + a.totalSize, 0))}
-            </div>
-          </div>
+          {navs.map(n => (
+            <button key={n.id}
+              className={`nav-item${view === n.id || (view === "detail" && n.id === "browse") ? " act" : ""}`}
+              onClick={() => setView(n.id)}>
+              <span>{n.label}</span>
+              {n.count > 0 && <span className="nav-count">{n.count}</span>}
+            </button>
+          ))}
         </div>
-
-        <div className="sb-foot">
-          Tersimpan lokal — Terenkripsi AES-256<br />
-          <span
-            style={{ color: "rgba(255,255,255,.4)", cursor: "pointer", textDecoration: "underline" }}
-            onClick={handleLogout}>Keluar dari akun</span>
+        <div className="sb-user">
+          <div className="sb-uname">{session.username}</div>
+          <button className="btn btn-g btn-sm" onClick={handleLogout}>Keluar</button>
         </div>
       </nav>
 
-      {/* ── Main content ── */}
       <div className="main">
         <header className="topbar">
-          <div className="topbar-title">
-            {view === "dashboard" && "Dasbor"}
-            {view === "browse"    && "Semua Arsip"}
-            {view === "add"       && "Tambah Arsip Baru"}
-            {view === "detail"    && "Detail Arsip"}
-            {view === "inbox"     && "Berbagi & Kiriman"}
-          </div>
+          <div className="topbar-title">{titles[view]}</div>
           {(view === "browse" || view === "dashboard") && (
-            <div className="searchbar">
-              <span style={{ fontFamily: "var(--fm)", fontSize: "11px", color: "var(--ink4)" }}>CARI</span>
-              <input
-                placeholder="Judul, ID, tag, kategori..."
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-              />
-            </div>
+            <input className="search" placeholder="Cari arsip"
+              value={search} onChange={e => setSearch(e.target.value)} />
           )}
           {view !== "add" && (
-            <button className="btn btn-p btn-sm" onClick={() => setView("add")}>+ Arsip Baru</button>
+            <button className="btn btn-p btn-sm" onClick={() => setView("add")}>Arsip Baru</button>
           )}
         </header>
 
         <div className="page">
           {loading ? (
-            <div className="loading">Memuat data arsip...</div>
+            <div className="loading">Memuat...</div>
           ) : view === "dashboard" ? (
             <Dashboard
-              archives={archives}
-              allMeta={allMeta}
+              archives={filtered}
               session={session}
               onGo={setView}
               onDetail={goDetail}
@@ -260,18 +207,16 @@ export default function App() {
         </div>
       </div>
 
-      {/* ── Toast ── */}
       {toast && <div className={`toast ${toast.type}`}>{toast.msg}</div>}
 
-      {/* ── Confirm dialog ── */}
       {confirm && (
-        <div className="cfm-ov">
+        <div className="ov" style={{ zIndex: 2000 }}>
           <div className="cfm-box">
             <h3>{confirm.title}</h3>
             <p>{confirm.msg}</p>
             <div className="cfm-acts">
               <button className="btn btn-s" onClick={() => setConfirm(null)}>Batal</button>
-              <button className="btn btn-d" onClick={confirm.fn}>Hapus Sekarang</button>
+              <button className="btn btn-d" onClick={confirm.fn}>Hapus</button>
             </div>
           </div>
         </div>

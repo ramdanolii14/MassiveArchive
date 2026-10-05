@@ -1,12 +1,8 @@
 import { useState, useEffect } from "react";
 import { IDB }    from "../database.js";
 import { Crypto } from "../crypto.js";
-import { fmtSize, fmtDT, STATUSES, fileTypeLabel } from "../utils.js";
+import { fmtSize, fmtDT, fileTypeLabel } from "../utils.js";
 import { EditForm } from "./ArchiveViews.jsx";
-
-// ════════════════════════════════════════════════════════════════
-// DETAIL VIEW
-// ════════════════════════════════════════════════════════════════
 
 export function DetailView({ recId, session, onBack, onDelete, toast, onReload }) {
   const [arc,       setArc]       = useState(null);
@@ -21,25 +17,17 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
   const isOwner   = arc?.owner === session.username;
   const canAccess = isOwner || (arc?.sharedWith || []).includes(session.username);
 
-  // ── Decrypt a file using the current session passphrase.
-  // For shared files the owner encrypted with THEIR passphrase, so we need
-  // to re-encrypt with the owner's key on share — but since we are local-only,
-  // shared archives store the blobs encrypted with the OWNER's passphrase.
-  // The owner must provide their passphrase to decrypt; we prompt if needed.
+  // Berkas dienkripsi dengan kata kunci pemilik. Penerima yang dibagikan
+  // diminta memasukkan kata kunci pemilik bila kata kunci sendiri tidak cocok.
   const decrypt = async (file) => {
     setDecBusy(file.name);
     try {
-      // Try with the current user's passphrase first (works for owners)
       const plain = await Crypto.decrypt(file.encData, session.passphrase);
       setDecBusy(null);
       return new Blob([plain], { type: file.type });
     } catch {
-      // If that fails and this is a shared archive, ask for the owner's passphrase
       if (!isOwner) {
-        const ownerPass = window.prompt(
-          `Berkas ini dienkripsi dengan kata kunci milik "${arc.owner}".\n` +
-          `Masukkan kata kunci milik "${arc.owner}" untuk mendekripsi:`
-        );
+        const ownerPass = window.prompt(`Masukkan kata kunci milik "${arc.owner}" untuk membuka berkas:`);
         if (!ownerPass) { setDecBusy(null); return null; }
         try {
           const plain = await Crypto.decrypt(file.encData, ownerPass);
@@ -47,12 +35,12 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
           return new Blob([plain], { type: file.type });
         } catch {
           setDecBusy(null);
-          toast("Kata kunci salah. Berkas tidak dapat didekripsi.", "err");
+          toast("Kata kunci salah.", "err");
           return null;
         }
       }
       setDecBusy(null);
-      toast("Gagal mendekripsi berkas. Kata kunci tidak cocok.", "err");
+      toast("Gagal membuka berkas. Kata kunci tidak cocok.", "err");
       return null;
     }
   };
@@ -64,14 +52,12 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
     const a   = document.createElement("a");
     a.href = url; a.download = file.name; a.click();
     URL.revokeObjectURL(url);
-    toast("Mengunduh " + file.name);
   };
 
   const preview = async (file) => {
     const blob = await decrypt(file);
     if (!blob) return;
-    const url = URL.createObjectURL(blob);
-    setPrev({ file, url });
+    setPrev({ file, url: URL.createObjectURL(blob) });
   };
 
   const closePreview = () => {
@@ -82,9 +68,8 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
   const canPreview = (type = "") =>
     type.startsWith("image/") || type.startsWith("video/") || type === "application/pdf";
 
-  if (!arc) return <div className="loading">Memuat detail arsip...</div>;
+  if (!arc) return <div className="loading">Memuat...</div>;
 
-  // ── Mode edit — hanya owner ──
   if (editOpen && isOwner) {
     return (
       <EditForm
@@ -94,167 +79,109 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
           await reload();
           await onReload();
           setEditOpen(false);
-          toast("Arsip berhasil diperbarui.");
+          toast("Perubahan disimpan.");
         }}
         onCancel={() => setEditOpen(false)}
       />
     );
   }
 
+  const fields = [
+    ["Tanggal dokumen", arc.date],
+    ["Ditambahkan",     fmtDT(arc.createdAt)],
+    arc.author    && ["Penyusun", arc.author],
+    arc.reference && ["No. referensi", arc.reference],
+    arc.location  && ["Lokasi", arc.location],
+    !isOwner      && ["Pemilik", arc.owner],
+  ].filter(Boolean);
+
   return (
-    <div style={{ maxWidth: "920px" }}>
-      <div style={{ marginBottom: "16px" }}>
-        <button className="btn btn-g btn-sm" onClick={onBack}>← Kembali ke Daftar</button>
-      </div>
+    <div style={{ maxWidth: 920 }}>
+      <button className="btn btn-g btn-sm" style={{ marginBottom: 14 }} onClick={onBack}>Kembali</button>
 
-      <div className="sec-card">
-        <div style={{ padding: "28px 30px" }}>
-          <div className="dt-hdr">
-            <div style={{ flex: 1 }}>
-              <div className="dt-id">{arc.archiveId}</div>
-              <div className="dt-title">{arc.title}</div>
-              <div style={{ display: "flex", gap: "7px", flexWrap: "wrap", alignItems: "center" }}>
-                {arc.category && <span className="badge badge-cat">{arc.category}</span>}
-                {arc.status   && <span className={`badge ${STATUSES[arc.status] || "badge-exp"}`}>{arc.status}</span>}
-                {!isOwner     && <span className="badge badge-shared">dibagikan oleh {arc.owner}</span>}
-                {!canAccess   && <span className="badge badge-locked">🔒 Berkas Terkunci</span>}
-                {(arc.tags || []).map(t => (
-                  <span key={t} style={{ fontFamily: "var(--fm)", fontSize: "10px", color: "var(--ink4)" }}>{t}</span>
-                ))}
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: "8px", marginLeft: "16px", flexWrap: "wrap", justifyContent: "flex-end" }}>
-              {isOwner && (
-                <button className="btn btn-s btn-sm" onClick={() => setEditOpen(true)}>✏ Edit</button>
-              )}
-              {isOwner && (
-                <button className="btn btn-share btn-sm" onClick={() => setShareOpen(true)}>Bagikan</button>
-              )}
-              {isOwner && (
-                <button className="btn btn-d btn-sm" onClick={() => onDelete(arc.id)}>Hapus</button>
-              )}
+      <div className="panel pad" style={{ padding: "28px 30px" }}>
+        <div className="dt-head">
+          <div className="grow">
+            <div className="dt-id">{arc.archiveId}</div>
+            <div className="dt-title">{arc.title}</div>
+            <div className="row" style={{ gap: 6 }}>
+              {arc.category && <span className="badge">{arc.category}</span>}
+              {arc.status   && <span className="badge badge-line">{arc.status}</span>}
+              {(arc.tags || []).map(t => <span key={t} className="badge badge-line">{t}</span>)}
             </div>
           </div>
-
-          {/* Metadata — always visible */}
-          <div className="dt-grid">
-            <div className="df">
-              <div className="df-lbl">Tanggal Dokumen</div>
-              <div className="df-val">{arc.date}</div>
-            </div>
-            <div className="df">
-              <div className="df-lbl">Ditambahkan</div>
-              <div className="df-val" style={{ fontSize: "13.5px" }}>{fmtDT(arc.createdAt)}</div>
-            </div>
-            {arc.author    && <div className="df"><div className="df-lbl">Penyusun</div><div className="df-val">{arc.author}</div></div>}
-            {arc.reference && <div className="df"><div className="df-lbl">No. Referensi</div><div className="df-val" style={{ fontFamily: "var(--fm)", fontSize: "13px" }}>{arc.reference}</div></div>}
-            {arc.location  && <div className="df"><div className="df-lbl">Lokasi / Asal</div><div className="df-val">{arc.location}</div></div>}
-            {arc.updatedAt && (
-              <div className="df">
-                <div className="df-lbl">Terakhir Diubah</div>
-                <div className="df-val" style={{ fontSize: "13px", color: "var(--ink3)" }}>{fmtDT(arc.updatedAt)}</div>
-              </div>
-            )}
-          </div>
-
-          {arc.description && (
-            <div style={{ marginBottom: "16px" }}>
-              <div className="df-lbl" style={{ marginBottom: "6px" }}>Deskripsi</div>
-              <div style={{
-                background: "var(--bg2)", border: "1px solid var(--rule)", padding: "14px",
-                color: "var(--ink2)", lineHeight: "1.7", fontSize: "14.5px",
-              }}>{arc.description}</div>
+          {isOwner && (
+            <div className="row" style={{ justifyContent: "flex-end" }}>
+              <button className="btn btn-s btn-sm" onClick={() => setEditOpen(true)}>Edit</button>
+              <button className="btn btn-s btn-sm" onClick={() => setShareOpen(true)}>Bagikan</button>
+              <button className="btn btn-d btn-sm" onClick={() => onDelete(arc.id)}>Hapus</button>
             </div>
           )}
-
-          {arc.notes && isOwner && (
-            <div style={{ marginBottom: "16px" }}>
-              <div className="df-lbl" style={{ marginBottom: "6px" }}>Catatan Internal</div>
-              <div style={{
-                background: "var(--gold-bg)", border: "1px solid var(--gold3)", padding: "12px",
-                color: "var(--ink2)", lineHeight: "1.7", fontSize: "13.5px", fontStyle: "italic",
-              }}>{arc.notes}</div>
-            </div>
-          )}
-
-          {/* Files section */}
-          <div className="files-sec" style={{ marginTop: "24px" }}>
-            <h3>Lampiran Berkas ({arc.files?.length || 0}) — Terenkripsi</h3>
-
-            {!canAccess ? (
-              // Public view — only show count and sizes, no download
-              <div className="locked-notice">
-                <div style={{ fontSize: "28px", marginBottom: "8px" }}>🔒</div>
-                <p>
-                  Berkas arsip ini hanya dapat diakses oleh pemilik atau pengguna yang diberi izin.<br/>
-                  Hubungi <strong>{arc.owner}</strong> untuk meminta akses berbagi.
-                </p>
-                {arc.files?.length > 0 && (
-                  <p style={{ marginTop: "10px" }}>
-                    {arc.files.length} berkas terlampir —{" "}
-                    Total: {fmtSize(arc.files.reduce((s, f) => s + f.size, 0))}
-                  </p>
-                )}
-              </div>
-            ) : !arc.files?.length ? (
-              <div style={{
-                color: "var(--ink4)", fontSize: "13px", textAlign: "center", padding: "20px",
-                background: "var(--bg2)", border: "1px solid var(--rule)",
-              }}>Tidak ada berkas terlampir</div>
-            ) : (
-              <>
-                {!isOwner && (
-                  <div style={{
-                    padding: "9px 14px", background: "var(--blue-bg)", border: "1px solid #90ade0",
-                    fontFamily: "var(--fm)", fontSize: "11px", color: "var(--blue)", marginBottom: "12px",
-                  }}>
-                    Berkas dienkripsi dengan kata kunci milik <strong>{arc.owner}</strong>.
-                    Anda perlu memasukkan kata kunci mereka saat mengunduh.
-                  </div>
-                )}
-                <div className="fgrid2">
-                  {arc.files.map((file, i) => (
-                    <div key={i} className="fcard">
-                      <div className="fcard-ico">{fileTypeLabel(file.type)}</div>
-                      <div className="fcard-name">{file.name}</div>
-                      <div className="fcard-sz">{fmtSize(file.size)}</div>
-                      <div className="fcard-lock">AES-256-GCM</div>
-                      <div style={{ marginTop: "10px", display: "flex", gap: "5px", justifyContent: "center", flexWrap: "wrap" }}>
-                        {canPreview(file.type) && (
-                          <button className="btn btn-s btn-sm" style={{ fontSize: "11px", padding: "4px 9px" }}
-                            onClick={() => preview(file)} disabled={decBusy === file.name}>
-                            {decBusy === file.name ? "..." : "Lihat"}
-                          </button>
-                        )}
-                        <button className="btn btn-s btn-sm" style={{ fontSize: "11px", padding: "4px 9px" }}
-                          onClick={() => download(file)} disabled={decBusy === file.name}>
-                          {decBusy === file.name ? "Dekripsi..." : "Unduh"}
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ marginTop: "10px", fontFamily: "var(--fm)", fontSize: "11px", color: "var(--ink4)" }}>
-                  Total ukuran: {fmtSize(arc.files.reduce((s, f) => s + f.size, 0))} (terenkripsi)
-                </div>
-              </>
-            )}
-          </div>
         </div>
+
+        <div className="dt-grid">
+          {fields.map(([k, v]) => (
+            <div key={k}>
+              <div className="df-lbl">{k}</div>
+              <div className="df-val">{v}</div>
+            </div>
+          ))}
+        </div>
+
+        {arc.description && <div className="note">{arc.description}</div>}
+        {arc.notes && isOwner && (
+          <div className="note">
+            <div className="df-lbl" style={{ marginBottom: 4 }}>Catatan pribadi</div>
+            {arc.notes}
+          </div>
+        )}
+
+        <div className="files-title">Berkas ({arc.files?.length || 0})</div>
+
+        {!canAccess ? (
+          <div className="locked">
+            Hanya pemilik dan pengguna yang diberi akses yang bisa membuka berkas. Hubungi {arc.owner}.
+          </div>
+        ) : !arc.files?.length ? (
+          <div className="locked">Tidak ada berkas.</div>
+        ) : (
+          <>
+            {!isOwner && (
+              <div className="df-lbl" style={{ marginBottom: 12 }}>
+                Berkas ini memakai kata kunci milik {arc.owner}.
+              </div>
+            )}
+            <div className="fcards">
+              {arc.files.map((file, i) => (
+                <div key={i} className="fcard">
+                  <span className="fi-type">{fileTypeLabel(file.type)}</span>
+                  <div className="fcard-name">{file.name}</div>
+                  <div className="fi-sz">{fmtSize(file.size)}</div>
+                  <div className="fcard-acts">
+                    {canPreview(file.type) && (
+                      <button className="btn btn-s btn-sm" onClick={() => preview(file)}
+                        disabled={decBusy === file.name}>
+                        {decBusy === file.name ? "..." : "Lihat"}
+                      </button>
+                    )}
+                    <button className="btn btn-s btn-sm" onClick={() => download(file)}
+                      disabled={decBusy === file.name}>
+                      {decBusy === file.name ? "..." : "Unduh"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
 
-      {/* Preview Modal */}
       {prev && (
         <div className="ov" onClick={closePreview}>
           <div className="modal" onClick={e => e.stopPropagation()}>
             <div className="modal-hdr">
-              <div className="modal-ttl">
-                {prev.file.name}
-                <span style={{ fontFamily: "var(--fm)", fontSize: "10px", color: "var(--ink4)", marginLeft: "10px" }}>
-                  {fmtSize(prev.file.size)}
-                </span>
-              </div>
-              <div style={{ display: "flex", gap: "7px" }}>
+              <div className="modal-ttl">{prev.file.name}</div>
+              <div className="row" style={{ flexShrink: 0 }}>
                 <button className="btn btn-s btn-sm" onClick={() => download(prev.file)}>Unduh</button>
                 <button className="btn btn-g btn-sm" onClick={closePreview}>Tutup</button>
               </div>
@@ -262,7 +189,7 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
             <div className="modal-body">
               {prev.file.type?.startsWith("image/") && <img src={prev.url} alt={prev.file.name} className="img-thumb" />}
               {prev.file.type?.startsWith("video/") && <video src={prev.url} controls />}
-              {prev.file.type === "application/pdf"  && <iframe src={prev.url} className="pdf-frame" title={prev.file.name} />}
+              {prev.file.type === "application/pdf" && <iframe src={prev.url} className="pdf-frame" title={prev.file.name} />}
             </div>
           </div>
         </div>
@@ -275,10 +202,6 @@ export function DetailView({ recId, session, onBack, onDelete, toast, onReload }
   );
 }
 
-// ════════════════════════════════════════════════════════════════
-// SHARE MODAL
-// ════════════════════════════════════════════════════════════════
-
 export function ShareModal({ arc, session, onClose, toast, onReload }) {
   const [recipient,  setRecipient]  = useState("");
   const [message,    setMessage]    = useState("");
@@ -287,7 +210,7 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
   const [sharedWith, setSharedWith] = useState(arc.sharedWith || []);
 
   useEffect(() => {
-    IDB.getAllUsers().then(u => setUsers(u.filter(u => u.username !== session.username)));
+    IDB.getAllUsers().then(u => setUsers(u.filter(x => x.username !== session.username)));
   }, [session.username]);
 
   const handleShare = async () => {
@@ -308,7 +231,7 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
         read:         false,
       });
       await onReload();
-      toast("Arsip berhasil dibagikan ke " + recipient);
+      toast("Dibagikan ke " + recipient);
       setRecipient("");
       setMessage("");
     } catch { toast("Gagal membagikan arsip.", "err"); }
@@ -327,63 +250,46 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
     <div className="ov" onClick={onClose}>
       <div className="modal modal-sm" onClick={e => e.stopPropagation()}>
         <div className="modal-hdr">
-          <div className="modal-ttl">Bagikan Arsip</div>
+          <div className="modal-ttl">Bagikan arsip</div>
           <button className="btn btn-g btn-sm" onClick={onClose}>Tutup</button>
         </div>
         <div className="modal-body">
-          <div style={{ fontFamily: "var(--fm)", fontSize: "11px", color: "var(--ink4)", marginBottom: "16px", lineHeight: "1.7" }}>
-            Arsip: <strong style={{ color: "var(--ink)" }}>{arc.archiveId}</strong> — {arc.title}<br />
-            Penerima dapat mengunduh berkas, tetapi perlu memasukkan <strong>kata kunci Anda</strong> untuk mendekripsi.
-          </div>
-
           {users.length === 0 ? (
-            <div style={{
-              padding: "16px", background: "var(--bg2)", border: "1px solid var(--rule)",
-              fontFamily: "var(--fm)", fontSize: "11.5px", color: "var(--ink4)",
-            }}>
-              Belum ada pengguna lain terdaftar di perangkat ini.
-            </div>
+            <div className="locked">Belum ada pengguna lain di perangkat ini.</div>
           ) : (
-            <>
-              <div className="fg" style={{ marginBottom: "12px" }}>
-                <label>Bagikan ke Pengguna</label>
+            <div className="stack">
+              <div className="field">
+                <label>Penerima</label>
                 <select value={recipient} onChange={e => setRecipient(e.target.value)}>
-                  <option value="">— Pilih pengguna —</option>
+                  <option value="">Pilih pengguna</option>
                   {users.map(u => (
-                    <option key={u.username} value={u.username}
-                      disabled={sharedWith.includes(u.username)}>
+                    <option key={u.username} value={u.username} disabled={sharedWith.includes(u.username)}>
                       {u.username}{sharedWith.includes(u.username) ? " (sudah dibagikan)" : ""}
                     </option>
                   ))}
                 </select>
               </div>
-              <div className="fg" style={{ marginBottom: "16px" }}>
+              <div className="field">
                 <label>Pesan (opsional)</label>
-                <textarea value={message} onChange={e => setMessage(e.target.value)}
-                  placeholder="Pesan untuk penerima..." rows={2} />
+                <textarea value={message} onChange={e => setMessage(e.target.value)} rows={2} />
               </div>
-              <button className="btn btn-share" onClick={handleShare} disabled={busy || !recipient}>
-                {busy ? "Membagikan..." : "Bagikan Arsip"}
+              <button className="btn btn-p" onClick={handleShare} disabled={busy || !recipient}>
+                {busy ? "Membagikan..." : "Bagikan"}
               </button>
-            </>
+            </div>
           )}
 
           {sharedWith.length > 0 && (
-            <div style={{ marginTop: "20px" }}>
-              <div style={{ height: "1px", background: "var(--rule)", margin: "20px 0" }} />
-              <div style={{
-                fontFamily: "var(--fm)", fontSize: "10px", textTransform: "uppercase",
-                letterSpacing: ".09em", color: "var(--ink4)", marginBottom: "10px",
-              }}>Dibagikan ke</div>
-              {sharedWith.map(u => (
-                <div key={u} style={{
-                  display: "flex", alignItems: "center", gap: "10px", padding: "8px 12px",
-                  background: "#fff", border: "1px solid var(--rule)", marginBottom: "6px",
-                }}>
-                  <span style={{ fontFamily: "var(--fm)", fontSize: "12.5px", color: "var(--blue)", flex: 1 }}>{u}</span>
-                  <button className="btn btn-d btn-sm" onClick={() => removeShare(u)}>Cabut Akses</button>
-                </div>
-              ))}
+            <div style={{ marginTop: 22 }}>
+              <div className="df-lbl" style={{ marginBottom: 8 }}>Sudah dibagikan ke</div>
+              <div className="flist" style={{ marginTop: 0 }}>
+                {sharedWith.map(u => (
+                  <div key={u} className="fi">
+                    <span className="grow">{u}</span>
+                    <button className="btn btn-d btn-sm" onClick={() => removeShare(u)}>Cabut</button>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
