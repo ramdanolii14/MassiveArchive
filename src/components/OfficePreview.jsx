@@ -30,7 +30,8 @@ export function OfficePreview({ blob, fileName }) {
         } else if (ext === "xlsx") {
           const mod = await import("xlsx-preview");
           if (cancelled) return;
-          const fn = mod.xlsx2Html || mod.default?.xlsx2Html;
+          const api = mod.default || mod;
+          const fn = api.xlsx2Html || mod.xlsx2Html;
           if (!fn) throw new Error("Mesin pratinjau XLSX tidak tersedia.");
           const result = await fn(blob);
           if (cancelled) return;
