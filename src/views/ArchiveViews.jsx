@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Crypto } from "../crypto.js";
+import { Crypto, toUint8Array } from "../crypto.js";
 import { IDB }    from "../database.js";
 import { fmtSize, CATS, STATUSES, fileTypeLabel } from "../utils.js";
 import { Avatar }          from "../components/Avatar.jsx";
@@ -315,7 +315,7 @@ async function encryptLegacyFiles(list, passphrase, setProg) {
 }
 
 async function uploadEncryptedPayload(encData, meta, setProg) {
-  const bytes = Crypto.toUint8Array(encData);
+  const bytes = toUint8Array(encData);
   const state = await IDB.startUpload({
     size: bytes.byteLength,
     name: meta.name,
