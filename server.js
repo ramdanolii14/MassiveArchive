@@ -218,9 +218,13 @@ function parseCookies(header = "") {
   return out;
 }
 
-function createSession(userId) {
+function createSession(userId, options = {}) {
   const token = crypto.randomBytes(32).toString("hex");
-  sessions.set(token, { userId, expiresAt: Date.now() + SESSION_TTL });
+  sessions.set(token, {
+    userId,
+    recoveryAuthorized: Boolean(options.recoveryAuthorized),
+    expiresAt: Date.now() + SESSION_TTL,
+  });
   return token;
 }
 
@@ -320,6 +324,7 @@ app.post("/api/auth/register", (req, res) => {
   };
   delete item.actor;
   users.push(item);
+  delete req.body.currentPassHash;
   writeCol("users", users);
   const token = createSession(item.id);
   setSessionCookie(res, token, req);
@@ -333,7 +338,7 @@ app.post("/api/auth/recover", (req, res) => {
   if (!user || !user.recoveryHash || user.recoveryHash !== recoveryHash) {
     return res.status(401).json({ error: "Recovery Key tidak valid." });
   }
-  const token = createSession(user.id);
+  const token = createSession(user.id, { recoveryAuthorized: true });
   setSessionCookie(res, token, req);
   res.json(authUser(user, true));
 });
@@ -793,7 +798,20 @@ function patchUser(req, res) {
     users[idx].username = newName;
   }
 
-  for (const k of ["avatar", "passHash", "publicKey", "keyId", "privateKeyBox", "recoveryHash", "recoveryKeyBox"]) {
+  const securityFields = [
+    "passHash", "publicKey", "keyId", "privateKeyBox",
+    "recoveryHash", "recoveryKeyBox"
+  ];
+  const changingSecurity = securityFields.some(k => k in req.body);
+
+  if (changingSecurity && !sessions.get(req.sessionToken)?.recoveryAuthorized) {
+    const currentPassHash = String(req.body?.currentPassHash || "");
+    if (!currentPassHash || currentPassHash !== users[idx].passHash) {
+      return res.status(403).json({ error: "Kata kunci lama tidak valid." });
+    }
+  }
+
+  for (const k of ["avatar", ...securityFields]) {
     if (k in req.body) users[idx][k] = req.body[k];
   }
 
