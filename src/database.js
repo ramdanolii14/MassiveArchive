@@ -61,8 +61,8 @@ export const IDB = {
   getUser:    (username) => req("GET",  `/users/${encodeURIComponent(username)}`).catch(() => null),
   addUser:    (data)     => req("POST", "/users", data),
   getAllUsers: ()        => req("GET",  "/users"),
-  // Profil menggunakan POST endpoint tanpa username di URL. Ini evita
-  // masalah 404 dari proxy/router saat PATCH ou parameter path.
+  // Profil menggunakan POST endpoint tanpa username di URL. Ini menghindari
+  // masalah 404 dari proxy/router saat PATCH atau parameter path.
   updateUser: (username, patch) =>
     req("POST", "/profile", { username, ...patch }),
 
