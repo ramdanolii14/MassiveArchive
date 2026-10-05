@@ -29,9 +29,15 @@ const DB_DIR          = path.join(__dirname, "database");
 const ARCHIVE_DIR     = path.join(DB_DIR, "archives");
 const ARCHIVE_INDEX   = path.join(DB_DIR, "archives.index.arsip");
 const LEGACY_ARCHIVES = path.join(DB_DIR, "archives.arsip");
+const PAYLOAD_DIR     = path.join(DB_DIR, "payloads");
+const UPLOAD_DIR      = path.join(DB_DIR, "uploads");
+const MAX_FILE_SIZE   = 200 * 1024 * 1024;
+const UPLOAD_CHUNK    = 4 * 1024 * 1024;
 
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 if (!fs.existsSync(ARCHIVE_DIR)) fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
+if (!fs.existsSync(PAYLOAD_DIR)) fs.mkdirSync(PAYLOAD_DIR, { recursive: true });
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // ════════════════════════════════════════════════════════════════
 // ENKRIPSI DISK — AES-256-GCM
@@ -199,57 +205,344 @@ function nextId(col) {
 // ROUTES — Archives
 // ════════════════════════════════════════════════════════════════
 
+function isDeleted(a) {
+  return Boolean(a?.deletedAt);
+}
+
+function archivePermissions(arc, actorKeyId, actorUsername) {
+  if (!arc) return {};
+  if (arc.owner === actorUsername) {
+    return { view: true, download: true, edit: true, reshare: true };
+  }
+  const envelope = (arc.keyEnvelopes || []).find(e =>
+    (actorKeyId && e.keyId === actorKeyId) || e.username === actorUsername
+  );
+  return envelope?.permissions || {};
+}
+
+function canReadArchive(arc, actorKeyId, actorUsername) {
+  const p = archivePermissions(arc, actorKeyId, actorUsername);
+  return Boolean(p.view);
+}
+
+function canChangeArchive(arc, actorKeyId, actorUsername, action = "edit") {
+  if (!arc) return false;
+  if (arc.owner === actorUsername) return true;
+  const p = archivePermissions(arc, actorKeyId, actorUsername);
+  return action === "reshare" ? Boolean(p.reshare) : Boolean(p.edit);
+}
+
+function archiveQuery(req, input) {
+  const { includeTrash = false, onlyTrash = false } = input || {};
+  let list = archivesMeta().filter(a => {
+    if (onlyTrash) return isDeleted(a);
+    if (includeTrash) return true;
+    return !isDeleted(a);
+  });
+
+  const username = typeof req.query.username === "string"
+    ? req.query.username.trim().toLowerCase()
+    : "";
+  const scope = req.query.scope || "";
+
+  if (scope === "accessible" && username) {
+    list = list.filter(a => a.owner === username || (a.sharedWith || []).includes(username));
+  } else if (scope === "owner" && username) {
+    list = list.filter(a => a.owner === username);
+  }
+
+  const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+  if (q) {
+    list = list.filter(a => [
+      a.title, a.archiveId, a.description, a.category, a.author,
+      a.reference, a.location, ...(a.tags || []), a.owner
+    ].filter(Boolean).some(v => String(v).toLowerCase().includes(q)));
+  }
+
+  if (req.query.cat) list = list.filter(a => a.category === req.query.cat);
+  if (req.query.from) list = list.filter(a => a.date >= req.query.from);
+  if (req.query.to) list = list.filter(a => a.date <= req.query.to);
+
+  const sort = req.query.sort || "newest";
+  list.sort((a, b) => {
+    if (sort === "oldest") return new Date(a.createdAt) - new Date(b.createdAt);
+    if (sort === "title") return String(a.title || "").localeCompare(String(b.title || ""));
+    if (sort === "date") return String(b.date || "").localeCompare(String(a.date || ""));
+    return new Date(b.createdAt) - new Date(a.createdAt);
+  });
+  return list;
+}
+
+function payloadPath(ref) {
+  const name = path.basename(String(ref || ""));
+  if (!name || name !== String(ref || "")) return null;
+  const full = path.join(PAYLOAD_DIR, name);
+  return full.startsWith(PAYLOAD_DIR + path.sep) ? full : null;
+}
+
+function removePayload(ref) {
+  const p = payloadPath(ref);
+  if (p && fs.existsSync(p)) {
+    try { fs.unlinkSync(p); } catch {}
+  }
+}
+
+function cleanupRemovedPayloads(oldArc, newArc) {
+  const kept = new Set((newArc.files || []).map(f => f.payloadRef).filter(Boolean));
+  for (const f of oldArc.files || []) {
+    if (f.payloadRef && !kept.has(f.payloadRef)) removePayload(f.payloadRef);
+  }
+}
+
+function uploadStatePath(uploadId) {
+  return path.join(UPLOAD_DIR, uploadId + ".json.arsip");
+}
+
+function uploadPartPath(uploadId) {
+  return path.join(UPLOAD_DIR, uploadId + ".part");
+}
+
+function newUploadId() {
+  return crypto.randomBytes(24).toString("hex");
+}
+
+function readUpload(uploadId) {
+  if (!/^[a-f0-9]{48}$/.test(uploadId)) return null;
+  const p = uploadStatePath(uploadId);
+  if (!fs.existsSync(p)) return null;
+  try { return JSON.parse(decryptFromDisk(fs.readFileSync(p))); }
+  catch { return null; }
+}
+
+function writeUpload(state) {
+  fs.writeFileSync(uploadStatePath(state.uploadId), encryptToDisk(JSON.stringify(state)));
+}
+
+function removeUpload(uploadId) {
+  for (const p of [uploadStatePath(uploadId), uploadPartPath(uploadId)]) {
+    if (fs.existsSync(p)) { try { fs.unlinkSync(p); } catch {} }
+  }
+}
+
+function materializeUploads(files, archiveId) {
+  const out = [];
+  for (let i = 0; i < (files || []).length; i++) {
+    const f = files[i];
+    if (!f?.uploadId) { out.push(f); continue; }
+    const state = readUpload(f.uploadId);
+    if (!state) throw new Error("Upload tidak ditemukan atau sudah kedaluwarsa.");
+    if (state.received !== state.size) {
+      throw new Error("Upload \"" + state.name + "\" belum selesai (" + state.received + "/" + state.size + " bytes).");
+    }
+    const part = uploadPartPath(state.uploadId);
+    if (!fs.existsSync(part)) throw new Error("Data upload tidak ditemukan.");
+    const payloadRef = "payload-" + String(archiveId).padStart(8, "0") + "-" + crypto.randomBytes(8).toString("hex") + ".bin";
+    const target = payloadPath(payloadRef);
+    if (!target) throw new Error("Lokasi payload tidak valid.");
+    fs.renameSync(part, target);
+    removeUpload(state.uploadId);
+    const clean = { ...f };
+    delete clean.uploadId;
+    out.push({ ...clean, payloadRef });
+  }
+  return out;
+}
+
+app.post("/api/uploads", (req, res) => {
+  const size = Number(req.body?.size);
+  if (!Number.isFinite(size) || size < 0 || size > MAX_FILE_SIZE) {
+    return res.status(400).json({ error: "Ukuran berkas tidak valid atau melebihi 200 MB." });
+  }
+  const uploadId = newUploadId();
+  writeUpload({
+    uploadId,
+    name: String(req.body?.name || "berkas"),
+    type: String(req.body?.type || "application/octet-stream"),
+    size,
+    received: 0,
+    createdAt: new Date().toISOString(),
+  });
+  res.json({ uploadId, size, received: 0, chunkSize: UPLOAD_CHUNK });
+});
+
+app.get("/api/uploads/:id", (req, res) => {
+  const state = readUpload(req.params.id);
+  if (!state) return res.status(404).json({ error: "Upload tidak ditemukan." });
+  res.json(state);
+});
+
+app.put("/api/uploads/:id",
+  express.raw({ type: () => true, limit: "5mb" }),
+  (req, res) => {
+    const state = readUpload(req.params.id);
+    if (!state) return res.status(404).json({ error: "Upload tidak ditemukan." });
+    const offset = Number(req.get("X-Upload-Offset"));
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (!Number.isInteger(offset) || offset !== state.received) {
+      return res.status(409).json({ error: "Offset upload tidak sesuai.", received: state.received });
+    }
+    if (!body.length) return res.status(400).json({ error: "Chunk kosong." });
+    if (body.length > UPLOAD_CHUNK || offset + body.length > state.size) {
+      return res.status(400).json({ error: "Ukuran chunk tidak valid." });
+    }
+    const fd = fs.openSync(uploadPartPath(state.uploadId), "a");
+    try { fs.writeSync(fd, body); } finally { fs.closeSync(fd); }
+    state.received += body.length;
+    writeUpload(state);
+    res.json({ uploadId: state.uploadId, received: state.received, size: state.size, done: state.received === state.size });
+  }
+);
+
+app.delete("/api/uploads/:id", (req, res) => {
+  const state = readUpload(req.params.id);
+  if (!state) return res.json({ ok: true });
+  removeUpload(state.uploadId);
+  res.json({ ok: true });
+});
+
 app.get("/api/archives", (req, res) => {
-  const index = archivesMeta();
+  const includeTrash = req.query.includeTrash === "1";
+  const onlyTrash = req.query.trash === "1";
+  const index = archiveQuery(req, { includeTrash, onlyTrash });
+
+  if (req.query.page) {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 25));
+    const pages = Math.max(1, Math.ceil(index.length / limit));
+    const safePage = Math.min(page, pages);
+    const start = (safePage - 1) * limit;
+    return res.json({ items: index.slice(start, start + limit), page: safePage, pages, limit, total: index.length });
+  }
+
   if (req.query.meta) return res.json(index);
-  // Tetap dukung kontrak lama /api/archives untuk kompatibilitas.
   res.json(index.map(a => readArchive(a.id)).filter(Boolean));
 });
 
 app.get("/api/archives/:id", (req, res) => {
-  const id = parseInt(req.params.id);
-  const arc = req.query.meta ? archivesMeta().find(a => a.id === id) : readArchive(id);
-  if (!arc) return res.status(404).json({ error: "Tidak ditemukan" });
+  const id = parseInt(req.params.id, 10);
+  const meta = archivesMeta().find(a => a.id === id);
+  if (!meta) return res.status(404).json({ error: "Tidak ditemukan" });
+  if (req.query.meta) return res.json(meta);
+
+  const username = String(req.query.username || "").trim().toLowerCase();
+  const keyId = String(req.query.keyId || "");
+  const arc = readArchive(id);
+  if (!canReadArchive(arc, keyId, username)) {
+    return res.status(403).json({ error: "Anda tidak memiliki akses untuk membuka arsip ini." });
+  }
   res.json(arc);
 });
 
-// Hanya mengambil satu payload berkas; tidak membaca arsip lain.
 app.get("/api/archives/:id/files/:idx", (req, res) => {
-  const id = parseInt(req.params.id);
-  const idx = parseInt(req.params.idx);
+  const id = parseInt(req.params.id, 10);
+  const idx = parseInt(req.params.idx, 10);
   const arc = readArchive(id);
-  const f = arc?.files?.[idx];
-  if (!f?.encData) return res.status(404).json({ error: "Tidak ditemukan" });
-  res.json({ encData: f.encData });
+  if (!arc) return res.status(404).json({ error: "Tidak ditemukan" });
+
+  const username = String(req.query.username || "").trim().toLowerCase();
+  const keyId = String(req.query.keyId || "");
+  const perms = archivePermissions(arc, keyId, username);
+  if (!perms.view) return res.status(403).json({ error: "Anda tidak memiliki izin melihat berkas ini." });
+
+  const f = arc.files?.[idx];
+  if (!f) return res.status(404).json({ error: "Tidak ditemukan" });
+  let payload = null;
+  if (f.payloadRef) {
+    const p = payloadPath(f.payloadRef);
+    if (p && fs.existsSync(p)) payload = fs.readFileSync(p);
+  } else if (f.encData) {
+    try { payload = Buffer.from(f.encData, "base64"); } catch {}
+  }
+  if (!payload) return res.status(404).json({ error: "Data berkas tidak ditemukan" });
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Content-Length", payload.length);
+  res.send(payload);
 });
 
 app.post("/api/archives", (req, res) => {
   const index = archivesMeta();
+  const actor = String(req.body?.actor || req.body?.owner || "").trim().toLowerCase();
   const item = { ...req.body, id: nextId(index) };
+  delete item.actor;
+  if (item.deletedAt) delete item.deletedAt;
+  if (Array.isArray(item.files)) {
+    try { item.files = materializeUploads(item.files, item.id); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+  }
+  if (actor && item.owner && actor !== item.owner) {
+    return res.status(403).json({ error: "Pemilik arsip tidak valid." });
+  }
   writeArchive(item);
   upsertArchiveMeta(item);
   res.json(item);
 });
 
 app.patch("/api/archives/:id", (req, res) => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(req.params.id, 10);
   const current = readArchive(id);
   if (!current) return res.status(404).json({ error: "Tidak ditemukan" });
+  if (isDeleted(current)) return res.status(409).json({ error: "Arsip berada di Tempat Sampah." });
 
-  const item = { ...current, ...req.body, id };
+  const actor = String(req.body?.actor || "").trim().toLowerCase();
+  const actorKeyId = String(req.body?.actorKeyId || "");
+  const action = ("keyEnvelopes" in req.body || "sharedWith" in req.body) ? "reshare" : "edit";
+  if (!canChangeArchive(current, actorKeyId, actor, action)) {
+    return res.status(403).json({ error: "Anda tidak memiliki izin untuk mengubah arsip ini." });
+  }
+
+  const body = { ...req.body };
+  delete body.actor;
+  delete body.actorKeyId;
+  const item = { ...current, ...body, id };
+  if (Array.isArray(item.files)) {
+    try { item.files = materializeUploads(item.files, id); }
+    catch (e) { return res.status(400).json({ error: e.message }); }
+  }
+  cleanupRemovedPayloads(current, item);
   writeArchive(item);
   upsertArchiveMeta(item);
   res.json(item);
 });
 
 app.delete("/api/archives/:id", (req, res) => {
-  const id = parseInt(req.params.id);
+  const id = parseInt(req.params.id, 10);
   const current = archivesMeta().find(a => a.id === id);
   if (!current) return res.status(404).json({ error: "Tidak ditemukan" });
+  const actor = String(req.body?.username || "").trim().toLowerCase();
+  if (current.owner !== actor) return res.status(403).json({ error: "Hanya pemilik yang dapat memindahkan arsip." });
+  if (!isDeleted(current)) {
+    const patch = { deletedAt: new Date().toISOString(), deletedBy: actor };
+    const full = readArchive(id);
+    writeArchive({ ...full, ...patch });
+    updateArchiveMeta(id, patch);
+  }
+  res.json({ ok: true, trashed: true });
+});
 
+app.post("/api/archives/:id/restore", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const current = archivesMeta().find(a => a.id === id);
+  if (!current) return res.status(404).json({ error: "Tidak ditemukan" });
+  const actor = String(req.body?.username || "").trim().toLowerCase();
+  if (current.owner !== actor) return res.status(403).json({ error: "Hanya pemilik yang dapat memulihkan arsip." });
+  const patch = { deletedAt: null, deletedBy: null, updatedAt: new Date().toISOString() };
+  const full = readArchive(id);
+  writeArchive({ ...full, ...patch });
+  updateArchiveMeta(id, patch);
+  res.json({ ...full, ...patch });
+});
+
+app.delete("/api/archives/:id/permanent", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const current = archivesMeta().find(a => a.id === id);
+  if (!current) return res.status(404).json({ error: "Tidak ditemukan" });
+  const actor = String(req.body?.username || "").trim().toLowerCase();
+  if (current.owner !== actor) return res.status(403).json({ error: "Hanya pemilik yang dapat menghapus permanen." });
+  const full = readArchive(id);
+  for (const f of full?.files || []) if (f.payloadRef) removePayload(f.payloadRef);
   removeArchive(id);
   writeArchiveIndex(archivesMeta().filter(a => a.id !== id));
-  res.json({ ok: true });
+  res.json({ ok: true, permanent: true });
 });
 
 // ════════════════════════════════════════════════════════════════
@@ -390,6 +683,35 @@ app.delete("/api/inbox/:id", (req, res) => {
   const id = parseInt(req.params.id);
   writeCol("inbox", readCol("inbox").filter(i => i.id !== id));
   res.json({ ok: true });
+});
+
+// ════════════════════════════════════════════════════════════════
+// ROUTES — Audit Log
+// ════════════════════════════════════════════════════════════════
+
+app.get("/api/audit", (req, res) => {
+  const username = typeof req.query.username === "string" ? req.query.username.trim().toLowerCase() : "";
+  const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 200));
+  const list = readCol("audit")
+    .filter(x => !username || x.username === username)
+    .sort((a, b) => new Date(b.at) - new Date(a.at))
+    .slice(0, limit);
+  res.json(list);
+});
+
+app.post("/api/audit", (req, res) => {
+  const col = readCol("audit");
+  const item = {
+    id: nextId(col),
+    username: String(req.body?.username || "").trim().toLowerCase(),
+    action: String(req.body?.action || "unknown").slice(0, 80),
+    details: req.body?.details && typeof req.body.details === "object" ? req.body.details : {},
+    at: req.body?.at || new Date().toISOString(),
+  };
+  if (!item.username) return res.status(400).json({ error: "Username wajib diisi." });
+  col.push(item);
+  writeCol("audit", col.slice(-1000));
+  res.json(item);
 });
 
 // ════════════════════════════════════════════════════════════════
