@@ -456,7 +456,7 @@ export function AddForm({ session, onSave, onCancel }) {
   );
 }
 
-// Edit arsip (hanya pemilik)
+// Edit arsip
 
 export function EditForm({ session, arcId, onSave, onCancel }) {
   const [arc, setArc] = useState(null);
