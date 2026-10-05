@@ -10,6 +10,7 @@ import { InboxView }      from "./views/InboxView.jsx";
 import { ProfileView }    from "./views/ProfileView.jsx";
 import { TrashView }      from "./views/TrashView.jsx";
 import { AuditView }      from "./views/AuditView.jsx";
+import { ContentSearchView } from "./views/ContentSearchView.jsx";
 import { logAudit }       from "./audit.js";
 
 // ROOT APP
@@ -143,6 +144,7 @@ export default function App() {
     { id: "inbox",     label: "Kotak Masuk", count: unreadCount },
     { id: "trash",     label: "Tempat Sampah", count: trashCount },
     { id: "audit",     label: "Aktivitas" },
+    { id: "content-search", label: "Cari Isi" },
     { id: "profile",   label: "Profil" },
   ];
 
@@ -154,6 +156,7 @@ export default function App() {
     inbox:     "Kotak Masuk",
     trash:     "Tempat Sampah",
     audit:     "Aktivitas",
+    "content-search": "Cari Isi",
     profile:   "Profil",
   };
 
@@ -236,6 +239,12 @@ export default function App() {
             <AuditView
               session={session}
               toast={showToast}
+            />
+          ) : view === "content-search" ? (
+            <ContentSearchView
+              session={session}
+              toast={showToast}
+              onDetail={goDetail}
             />
           ) : view === "inbox" ? (
             <InboxView
