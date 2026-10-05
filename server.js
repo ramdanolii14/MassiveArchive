@@ -246,6 +246,22 @@ function publicUser(user) {
   return safe;
 }
 
+function authUser(user, includeRecoveryBox = false) {
+  if (!user) return null;
+  const safe = {
+    id: user.id,
+    username: user.username,
+    avatar: user.avatar || null,
+    publicKey: user.publicKey,
+    keyId: user.keyId,
+    privateKeyBox: user.privateKeyBox,
+    createdAt: user.createdAt,
+    hasRecovery: Boolean(user.recoveryHash && user.recoveryKeyBox),
+  };
+  if (includeRecoveryBox) safe.recoveryKeyBox = user.recoveryKeyBox;
+  return safe;
+}
+
 function authRequired(req, res, next) {
   const token = parseCookies(req.headers.cookie || "").ma_session;
   const record = token ? sessions.get(token) : null;
@@ -278,7 +294,7 @@ app.post("/api/auth/login", (req, res) => {
   }
   const token = createSession(user.id);
   setSessionCookie(res, token);
-  res.json(user);
+  res.json(authUser(user));
 });
 
 app.post("/api/auth/register", (req, res) => {
@@ -305,7 +321,7 @@ app.post("/api/auth/register", (req, res) => {
   writeCol("users", users);
   const token = createSession(item.id);
   setSessionCookie(res, token);
-  res.status(201).json(item);
+  res.status(201).json(authUser(item));
 });
 
 app.post("/api/auth/recover", (req, res) => {
@@ -317,7 +333,7 @@ app.post("/api/auth/recover", (req, res) => {
   }
   const token = createSession(user.id);
   setSessionCookie(res, token);
-  res.json(user);
+  res.json(authUser(user, true));
 });
 
 app.post("/api/auth/logout", authRequired, (req, res) => {
@@ -327,7 +343,7 @@ app.post("/api/auth/logout", authRequired, (req, res) => {
 });
 
 app.get("/api/auth/me", authRequired, (req, res) => {
-  res.json(req.user);
+  res.json(authUser(req.user));
 });
 
 app.use(authRequired);
