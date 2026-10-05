@@ -20,7 +20,8 @@ async function extractText(blob, ext) {
   if (TEXT_EXTS.has(ext)) return blob.text();
 
   if (ext === "docx") {
-    const mammoth = await import("mammoth");
+    const mod = await import("mammoth");
+    const mammoth = mod.default || mod;
     const result = await mammoth.extractRawText({
       arrayBuffer: await blob.arrayBuffer(),
     });
@@ -42,7 +43,8 @@ async function extractText(blob, ext) {
   }
 
   if (["xlsx", "xls", "xlsm", "ods"].includes(ext)) {
-    const XLSX = await import("xlsx");
+    const mod = await import("xlsx");
+    const XLSX = mod.default || mod;
     const wb = XLSX.read(await blob.arrayBuffer(), { type: "array" });
     return wb.SheetNames.map(name =>
       XLSX.utils.sheet_to_csv(wb.Sheets[name])
