@@ -12,7 +12,7 @@ const TEXT_EXTS = new Set([
 function snippet(text, index, length = 180) {
   const start = Math.max(0, index - 70);
   const end = Math.min(text.length, start + length);
-  const value = text.slice(start, end).replace(/s+/g, " ").trim();
+  const value = text.slice(start, end).replace(/\s+/g, " ").trim();
   return start > 0 ? "..." + value : value;
 }
 
@@ -38,8 +38,7 @@ async function extractText(blob, ext) {
       const content = await page.getTextContent();
       pages.push(content.items.map(item => item.str || "").join(" "));
     }
-    return pages.join("
-");
+    return pages.join("\n");
   }
 
   if (["xlsx", "xls", "xlsm", "ods"].includes(ext)) {
@@ -48,8 +47,7 @@ async function extractText(blob, ext) {
     const wb = XLSX.read(await blob.arrayBuffer(), { type: "array" });
     return wb.SheetNames.map(name =>
       XLSX.utils.sheet_to_csv(wb.Sheets[name])
-    ).join("
-");
+    ).join("\n");
   }
 
   return "";
