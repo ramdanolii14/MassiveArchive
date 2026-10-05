@@ -62,7 +62,17 @@ export function WelcomeScreen({ onLogin }) {
         return;
       }
 
-      onLogin(sessionFromUser(user, pass, identity.privateKey));
+      if (!user.recoveryHash || !user.recoveryKeyBox) {
+        const recovery = await Crypto.createRecoveryBundle(identity.privateKey);
+        await IDB.updateUser(user.username, {
+          recoveryHash: recovery.recoveryHash,
+          recoveryKeyBox: recovery.recoveryKeyBox,
+        });
+        setRecoveryNotice(recovery.recoveryKey);
+        setPendingSession(sessionFromUser(user, pass, identity.privateKey));
+      } else {
+        onLogin(sessionFromUser(user, pass, identity.privateKey));
+      }
     } catch (e) {
       setErr(e.message || "Username atau kata kunci salah.");
     }
@@ -109,11 +119,7 @@ export function WelcomeScreen({ onLogin }) {
       setRecoveryNotice(recovery.recoveryKey);
       setUsername(user.username);
       setRecoveryKey(recovery.recoveryKey);
-      window.__massiveArchivePendingSession = sessionFromUser(
-        user,
-        pass,
-        identity.privateKey
-      );
+      setPendingSession(sessionFromUser(user, pass, identity.privateKey));
     } catch (e) {
       setErr(e.message || "Gagal membuat akun.");
     }
@@ -121,8 +127,8 @@ export function WelcomeScreen({ onLogin }) {
   };
 
   const finishRegistration = () => {
-    const pending = window.__massiveArchivePendingSession;
-    delete window.__massiveArchivePendingSession;
+    const pending = pendingSession;
+    setPendingSession(null);
     setRecoveryNotice("");
     if (pending) onLogin(pending);
   };
