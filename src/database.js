@@ -41,10 +41,14 @@ async function uploadReq(method, path, body, headers = {}) {
   return res.json();
 }
 
-function archiveCreds(session) {
-  return session
-    ? `?username=${encodeURIComponent(session.username)}&keyId=${encodeURIComponent(session.keyId || "")}`
-    : "";
+function archiveCreds(session, purpose = "") {
+  if (!session) return "";
+  const qs = new URLSearchParams({
+    username: session.username,
+    keyId: session.keyId || "",
+  });
+  if (purpose) qs.set("purpose", purpose);
+  return "?" + qs.toString();
 }
 
 export const IDB = {
@@ -78,8 +82,8 @@ export const IDB = {
     `/archives?meta=1&trash=1&scope=owner&username=${encodeURIComponent(username)}`
   ),
   getMeta: (id) => req("GET", `/archives/${id}?meta=1`),
-  fileData: async (id, idx, session) =>
-    reqBinary(`/archives/${id}/files/${idx}${archiveCreds(session)}`),
+  fileData: async (id, idx, session, purpose = "view") =>
+    reqBinary(`/archives/${id}/files/${idx}${archiveCreds(session, purpose)}`),
   update: (id, patch, session) => req(
     "PATCH",
     `/archives/${id}`,
