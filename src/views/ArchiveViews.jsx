@@ -4,6 +4,7 @@ import { IDB }    from "../database.js";
 import { fmtSize, CATS, STATUSES, fileTypeLabel } from "../utils.js";
 import { Avatar }          from "../components/Avatar.jsx";
 import { StorageCapsule }  from "../components/StorageCapsule.jsx";
+import { logAudit }        from "../audit.js";
 
 const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200 MB per berkas
 
@@ -83,29 +84,44 @@ export function Dashboard({ archives, session, avatar, onGo, onDetail }) {
 
 // Daftar arsip
 
-export function Browse({ archives, allMeta, session, userAvatars, onDetail }) {
-  const [cat,   setCat]   = useState("");
-  const [from,  setFrom]  = useState("");
-  const [to,    setTo]    = useState("");
-  const [sort,  setSort]  = useState("newest");
-  const [scope, setScope] = useState("accessible"); // accessible | all
+export function Browse({ session, userAvatars, search, onDetail }) {
+  const [cat, setCat] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [sort, setSort] = useState("newest");
+  const [scope, setScope] = useState("accessible");
+  const [page, setPage] = useState(1);
+  const [data, setData] = useState({ items: [], page: 1, pages: 1, total: 0 });
+  const [loading, setLoading] = useState(true);
 
-  const baseList = scope === "all" ? allMeta : archives;
+  useEffect(() => { setPage(1); }, [search, cat, from, to, sort, scope]);
 
-  let list = [...baseList];
-  if (cat)  list = list.filter(a => a.category === cat);
-  if (from) list = list.filter(a => a.date >= from);
-  if (to)   list = list.filter(a => a.date <= to);
-  list.sort((a, b) => {
-    if (sort === "newest") return new Date(b.createdAt) - new Date(a.createdAt);
-    if (sort === "oldest") return new Date(a.createdAt) - new Date(b.createdAt);
-    if (sort === "title")  return a.title.localeCompare(b.title);
-    if (sort === "date")   return b.date.localeCompare(a.date);
-    return 0;
-  });
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    IDB.pageMeta({
+      page,
+      limit: 25,
+      scope,
+      username: session.username,
+      q: search || "",
+      cat,
+      from,
+      to,
+      sort,
+    }).then(result => {
+      if (!cancelled) setData(result);
+    }).catch(() => {
+      if (!cancelled) setData({ items: [], page: 1, pages: 1, total: 0 });
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => { cancelled = true; };
+  }, [page, search, cat, from, to, sort, scope, session.username]);
 
-  const canAccess = (a) =>
-    a.owner === session.username || (a.sharedWith || []).includes(session.username);
+  const goPage = next => {
+    setPage(Math.min(Math.max(1, next), data.pages || 1));
+  };
 
   return (
     <div>
@@ -119,7 +135,7 @@ export function Browse({ archives, allMeta, session, userAvatars, onDetail }) {
           {CATS.map(c => <option key={c}>{c}</option>)}
         </select>
         <input type="date" value={from} onChange={e => setFrom(e.target.value)} />
-        <input type="date" value={to}   onChange={e => setTo(e.target.value)} />
+        <input type="date" value={to} onChange={e => setTo(e.target.value)} />
         <select value={sort} onChange={e => setSort(e.target.value)}>
           <option value="newest">Terbaru</option>
           <option value="oldest">Terlama</option>
@@ -129,42 +145,55 @@ export function Browse({ archives, allMeta, session, userAvatars, onDetail }) {
       </div>
 
       <div className="panel tbl-wrap">
-        {list.length === 0 ? (
+        {loading ? (
+          <div className="loading">Memuat daftar arsip...</div>
+        ) : data.items.length === 0 ? (
           <Empty title="Tidak ada hasil" text="Coba ubah filter atau kata pencarian." />
         ) : (
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>No.</th><th>Judul</th><th>Tanggal</th><th>Pemilik</th><th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.map(a => {
-                const ok = canAccess(a);
-                return (
-                  <tr key={a.id} onClick={() => onDetail(a.id)}>
-                    <td className="mono">{a.archiveId}</td>
-                    <td>
-                      <div className="td-title">{a.title}</div>
-                      <div className="td-sub">
-                        {[a.category, ...(a.tags || [])].filter(Boolean).join(", ")}
-                      </div>
-                    </td>
-                    <td className="mono">{a.date}</td>
-                    <td>
-                      <div className="owner-cell">
-                        <Avatar src={userAvatars?.[a.owner]} name={a.owner} />
-                        <span>{a.owner === session.username ? "Saya" : a.owner}</span>
-                      </div>
-                    </td>
-                    <td style={{ textAlign: "right" }}>
-                      {!ok && <span className="badge badge-line">Terkunci</span>}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>No.</th><th>Judul</th><th>Tanggal</th><th>Pemilik</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.items.map(a => {
+                  const ok = a.owner === session.username ||
+                    (a.sharedWith || []).includes(session.username);
+                  return (
+                    <tr key={a.id} onClick={() => onDetail(a.id)}>
+                      <td className="mono">{a.archiveId}</td>
+                      <td>
+                        <div className="td-title">{a.title}</div>
+                        <div className="td-sub">
+                          {[a.category, ...(a.tags || [])].filter(Boolean).join(", ")}
+                        </div>
+                      </td>
+                      <td className="mono">{a.date}</td>
+                      <td>
+                        <div className="owner-cell">
+                          <Avatar src={userAvatars?.[a.owner]} name={a.owner} />
+                          <span>{a.owner === session.username ? "Saya" : a.owner}</span>
+                        </div>
+                      </td>
+                      <td style={{ textAlign: "right" }}>
+                        {!ok && <span className="badge badge-line">Terkunci</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            <div className="pager">
+              <div className="td-sub">{data.total} arsip</div>
+              <div className="row">
+                <button className="btn btn-s btn-sm" disabled={page <= 1} onClick={() => goPage(page - 1)}>Sebelumnya</button>
+                <span className="pager-label">Halaman {data.page} / {data.pages}</span>
+                <button className="btn btn-s btn-sm" disabled={page >= data.pages} onClick={() => goPage(page + 1)}>Berikutnya</button>
+              </div>
+            </div>
+          </>
         )}
       </div>
     </div>
@@ -286,27 +315,64 @@ async function encryptLegacyFiles(list, passphrase, setProg) {
   return out;
 }
 
-async function encryptEnvelopeFiles(list, archiveKey, setProg) {
-  const out = [];
-  for (let i = 0; i < list.length; i++) {
-    setProg(`Mengenkripsi ${i + 1}/${list.length}`);
-    const encData = await Crypto.encryptWithKey(list[i].data, archiveKey);
-    out.push({
-      name: list[i].name, type: list[i].type, size: list[i].size,
-      encData, addedAt: list[i].addedAt,
-    });
+async function uploadEncryptedPayload(encData, meta, setProg) {
+  const bytes = Crypto.toUint8Array(encData);
+  const state = await IDB.startUpload({
+    size: bytes.byteLength,
+    name: meta.name,
+    type: meta.type,
+  });
+
+  let offset = state.received || 0;
+  let retries = 0;
+  try {
+    while (offset < bytes.byteLength) {
+      const end = Math.min(offset + (state.chunkSize || 4 * 1024 * 1024), bytes.byteLength);
+      const chunk = bytes.slice(offset, end);
+      try {
+        const result = await IDB.uploadChunk(state.uploadId, offset, chunk);
+        offset = result.received;
+        retries = 0;
+        setProg(`Mengunggah ${meta.name} ${Math.round((offset / bytes.byteLength) * 100)}%`);
+      } catch (e) {
+        const status = await IDB.uploadStatus(state.uploadId).catch(() => null);
+        if (status && Number.isInteger(status.received)) {
+          offset = status.received;
+        } else {
+          throw e;
+        }
+        if (++retries > 3) throw e;
+      }
+    }
+    return state.uploadId;
+  } catch (e) {
+    await IDB.cancelUpload(state.uploadId).catch(() => {});
+    throw e;
   }
-  setProg("");
-  return out;
 }
+
 
 async function createSecureArchiveFiles(list, session, setProg) {
   if (!session.publicKey || !session.keyId) {
     throw new Error("Identitas keamanan akun belum siap. Silakan masuk kembali.");
   }
+
   const archiveKey = Crypto.randomContentKey();
   const wrappedKey = await Crypto.wrapKey(archiveKey, session.publicKey);
-  const files = await encryptEnvelopeFiles(list, archiveKey, setProg);
+  const files = [];
+  for (let i = 0; i < list.length; i++) {
+    setProg(`Mengenkripsi ${i + 1}/${list.length}`);
+    const encData = await Crypto.encryptWithKey(list[i].data, archiveKey);
+    const uploadId = await uploadEncryptedPayload(encData, list[i], setProg);
+    files.push({
+      name: list[i].name,
+      type: list[i].type,
+      size: list[i].size,
+      addedAt: list[i].addedAt,
+      uploadId,
+    });
+  }
+  setProg("");
   return {
     files,
     keyMode: "envelope-v1",
@@ -314,6 +380,7 @@ async function createSecureArchiveFiles(list, session, setProg) {
       keyId: session.keyId,
       username: session.username,
       wrappedKey,
+      permissions: { view: true, download: true, edit: true, reshare: true },
     }],
   };
 }
@@ -448,7 +515,18 @@ export function EditForm({ session, arcId, onSave, onCancel }) {
       if (newFiles.length) {
         if (arc.keyMode === "envelope-v1") {
           const archiveKey = await unlockArchiveKey(arc, session);
-          encNew = await encryptEnvelopeFiles(newFiles, archiveKey, setEncProg);
+          for (let i = 0; i < newFiles.length; i++) {
+            setEncProg(`Mengenkripsi ${i + 1}/${newFiles.length}`);
+            const encData = await Crypto.encryptWithKey(newFiles[i].data, archiveKey);
+            const uploadId = await uploadEncryptedPayload(encData, newFiles[i], setEncProg);
+            encNew.push({
+              name: newFiles[i].name,
+              type: newFiles[i].type,
+              size: newFiles[i].size,
+              addedAt: newFiles[i].addedAt,
+              uploadId,
+            });
+          }
         } else {
           encNew = await encryptLegacyFiles(newFiles, session.passphrase, setEncProg);
         }
