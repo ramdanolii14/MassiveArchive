@@ -76,9 +76,8 @@ export const IDB = {
     reqBinary(`/archives/${id}/files/${idx}?purpose=${encodeURIComponent(purpose)}`),
   update: (id, patch) => req("PATCH", `/archives/${id}`, patch),
 
-  byOwner: async (owner) => {
-    const all = await req("GET", "/archives?meta=1&username=" + encodeURIComponent(owner) + "&scope=accessible");
-    return all;
+  byOwner: async () => {
+    return req("GET", "/archives?meta=1&scope=owner");
   },
 
   getAllMeta: async () => IDB.metaOf(await req("GET", "/archives?meta=1")),
