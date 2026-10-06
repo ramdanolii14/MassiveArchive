@@ -48,3 +48,15 @@ Peluk Keamanan xD
 
 
 ---
+
+## Windows: jalankan otomatis dari flashdisk
+
+Fitur ini membuat komputer Windows memantau drive USB dan menjalankan `npm start` otomatis ketika menemukan folder `MassiveArchive` yang memiliki file penanda `.massivearchive-usb`.
+
+Jalankan sekali di komputer Windows dari folder `scripts`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install-windows-usb-autostart.ps1
+```
+
+Setelah pemasangan, folder project, `database/`, dan file `.env` tetap berada di flashdisk. Komputer hanya menyimpan watcher kecil di profil pengguna Windows.
