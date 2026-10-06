@@ -2,226 +2,205 @@ import { useEffect, useRef, useState } from "react";
 import { IDB } from "../database.js";
 import { Crypto } from "../crypto.js";
 
-const MAX_BUFFER_AHEAD = 30;
+const POLL_MS = 1500;
 
-function waitForEvent(target, eventName, timeoutMs = 15000) {
-  return new Promise((resolve, reject) => {
-    let timer;
-    const done = () => {
-      clearTimeout(timer);
-      target.removeEventListener(eventName, onEvent);
-      resolve();
-    };
-    const onEvent = () => done();
-    target.addEventListener(eventName, onEvent, { once: true });
-    timer = setTimeout(() => {
-      target.removeEventListener(eventName, onEvent);
-      reject(new Error("Browser terlalu lama memproses buffer video."));
-    }, timeoutMs);
-  });
+function isSafariNative(video) {
+  return Boolean(video?.canPlayType?.("application/vnd.apple.mpegurl"));
 }
 
-async function appendBufferAsync(sourceBuffer, data) {
-  while (sourceBuffer.updating) await waitForEvent(sourceBuffer, "updateend");
-  sourceBuffer.appendBuffer(data);
-  await waitForEvent(sourceBuffer, "updateend");
-}
-
-function bufferedAhead(video) {
-  const ranges = video.buffered;
-  if (!ranges.length) return 0;
-  const t = video.currentTime || 0;
-  for (let i = 0; i < ranges.length; i++) {
-    if (t >= ranges.start(i) - 0.25 && t <= ranges.end(i) + 0.25) {
-      return Math.max(0, ranges.end(i) - t);
+async function waitForHlsReady(jobId, signal, setStatus) {
+  while (!signal.aborted) {
+    const state = await IDB.videoJobStatus(jobId);
+    if (state.status === "ready") return state;
+    if (state.status === "failed") {
+      throw new Error(state.error || "Pemrosesan HLS gagal.");
     }
+
+    if (state.status === "uploading") {
+      setStatus("Menyiapkan data video...");
+    } else if (state.status === "queued") {
+      setStatus("Antrean transcoding...");
+    } else {
+      setStatus(
+        state.progress
+          ? "Memproses HLS " + state.progress + "%"
+          : "Memproses HLS..."
+      );
+    }
+
+    await new Promise(resolve => setTimeout(resolve, POLL_MS));
   }
-  return Math.max(0, ranges.end(ranges.length - 1) - t);
+
+  throw new Error("Streaming dibatalkan.");
 }
 
-async function waitForBufferRoom(video) {
-  while (bufferedAhead(video) >= MAX_BUFFER_AHEAD) {
-    await new Promise(resolve => setTimeout(resolve, 300));
+async function createHlsFromExistingChunks(file, archiveId, fileIndex, archiveKey, signal, setStatus) {
+  if (file.storageMode !== "chunks" || file.encryptionMode !== "chunked-aes-gcm-v1") {
+    throw new Error("Video lama belum menggunakan format chunk yang didukung untuk HLS.");
   }
-}
 
-function candidateWebmTypes(file) {
-  const ext = String(file.name || "").toLowerCase().split(".").pop();
-  const base = file.type === "video/webm" || ext === "webm" ? "video/webm" : file.type || "video/mp4";
-  return [...new Set([
-    file.type,
-    base,
-    "video/webm; codecs=\"vp9,opus\"",
-    "video/webm; codecs=\"vp8,opus\"",
-    "video/webm",
-  ].filter(Boolean))];
-}
-
-async function streamWebm({ video, file, archiveKey, archiveId, fileIndex, signal, setStatus }) {
-  if (!window.MediaSource) throw new Error("Browser tidak mendukung Media Source streaming.");
-  const mime = candidateWebmTypes(file).find(t => MediaSource.isTypeSupported(t));
-  if (!mime) throw new Error("Browser ini tidak mendukung format WebM untuk streaming.");
-
-  const mediaSource = new MediaSource();
-  const objectUrl = URL.createObjectURL(mediaSource);
-  video.src = objectUrl;
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Media Source gagal dibuka.")), 15000);
-    mediaSource.addEventListener("sourceopen", () => { clearTimeout(timer); resolve(); }, { once: true });
-    mediaSource.addEventListener("error", () => { clearTimeout(timer); reject(new Error("Media Source mengalami galat.")); }, { once: true });
+  const job = await IDB.videoJobStart({
+    size: file.size,
+    name: file.name,
+    type: file.type,
   });
 
-  const sourceBuffer = mediaSource.addSourceBuffer(mime);
-  sourceBuffer.mode = "segments";
+  const plainChunkSize = Number(file.encryptionChunkSize);
+  const count = Number(file.chunkCount);
+  if (!Number.isSafeInteger(plainChunkSize) || plainChunkSize <= 0 ||
+      !Number.isSafeInteger(count) || count <= 0) {
+    await IDB.videoJobCancel(job.jobId).catch(() => {});
+    throw new Error("Metadata video chunk tidak valid.");
+  }
+
+  let offset = 0;
   try {
-    for (let i = 0; i < file.chunkCount; i++) {
-      if (signal.aborted) return;
-      await waitForBufferRoom(video);
+    for (let i = 0; i < count; i++) {
+      if (signal.aborted) throw new Error("Streaming dibatalkan.");
       const encrypted = await IDB.videoChunk(archiveId, fileIndex, i);
       const plain = await Crypto.decryptChunkWithKey(encrypted, archiveKey);
-      await appendBufferAsync(sourceBuffer, plain);
-      setStatus("Streaming " + Math.round(((i + 1) / file.chunkCount) * 100) + "%");
+      await IDB.videoJobChunk(job.jobId, offset, plain);
+      offset += plain.byteLength;
+      setStatus(
+        "Menyiapkan streaming HLS " +
+        Math.round((offset / Math.max(1, file.size)) * 100) + "%"
+      );
     }
-    while (sourceBuffer.updating) await waitForEvent(sourceBuffer, "updateend");
-    if (mediaSource.readyState === "open") mediaSource.endOfStream();
-  } finally {
-    URL.revokeObjectURL(objectUrl);
+
+    await IDB.videoJobFinish(job.jobId);
+    return job.jobId;
+  } catch (error) {
+    await IDB.videoJobCancel(job.jobId).catch(() => {});
+    throw error;
   }
 }
 
-async function streamMp4({ video, file, archiveKey, archiveId, fileIndex, signal, setStatus }) {
-  if (!window.MediaSource) throw new Error("Browser tidak mendukung Media Source streaming.");
+async function attachJobToArchive(archiveId, fileIndex, file, jobId, canEdit) {
+  if (!canEdit || file.hlsJobId === jobId) return;
+  const nextFiles = [];
+  const fresh = await IDB.get(archiveId);
+  if (!fresh?.files?.length) return;
 
-  const mod = await import("mp4box");
-  const MP4Box = mod.default || mod;
-  if (!MP4Box || !MP4Box.createFile) throw new Error("MP4Box.js tidak tersedia.");
+  for (let i = 0; i < fresh.files.length; i++) {
+    nextFiles.push(
+      i === fileIndex
+        ? { ...fresh.files[i], hlsJobId: jobId, hlsStatus: "processing" }
+        : fresh.files[i]
+    );
+  }
 
-  const mediaSource = new MediaSource();
-  const objectUrl = URL.createObjectURL(mediaSource);
-  video.src = objectUrl;
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("Media Source gagal dibuka.")), 15000);
-    mediaSource.addEventListener("sourceopen", () => { clearTimeout(timer); resolve(); }, { once: true });
-    mediaSource.addEventListener("error", () => { clearTimeout(timer); reject(new Error("Media Source mengalami galat.")); }, { once: true });
+  await IDB.update(
+    archiveId,
+    { files: nextFiles, updatedAt: new Date().toISOString() },
+    null
+  ).catch(() => {});
+}
+
+async function setupHlsVideo(video, jobId, signal, setStatus) {
+  const state = await waitForHlsReady(jobId, signal, setStatus);
+  const manifestUrl = "/api/video-stream/jobs/" + encodeURIComponent(jobId) + "/master.m3u8";
+
+  if (isSafariNative(video)) {
+    video.src = manifestUrl;
+    video.load();
+    setStatus("Streaming HLS siap.");
+    return () => {};
+  }
+
+  const mod = await import("hls.js");
+  const Hls = mod.default || mod;
+  if (!Hls?.isSupported?.()) {
+    throw new Error("Browser ini tidak mendukung HLS melalui MediaSource.");
+  }
+
+  const hls = new Hls({
+    enableWorker: true,
+    backBufferLength: 30,
+    maxBufferLength: 30,
+    maxMaxBufferLength: 60,
+    xhrSetup: xhr => {
+      xhr.withCredentials = true;
+    },
   });
 
-  const mp4boxfile = MP4Box.createFile();
-  const tracks = new Map();
-  let ready = false;
-  let started = false;
-  let parserError = null;
-
-  async function appendQueue(state) {
-    if (state.busy) return;
-    state.busy = true;
-    try {
-      while (state.queue.length) {
-        const buffer = state.queue.shift();
-        await appendBufferAsync(state.sourceBuffer, buffer);
-      }
-    } finally {
-      state.busy = false;
-    }
-  }
-
-  mp4boxfile.onError = error => {
-    parserError = new Error(String(error || "Gagal memproses video MP4."));
+  const cleanup = () => {
+    hls.destroy();
   };
 
-  mp4boxfile.onReady = info => {
-    ready = true;
-    try {
-      for (const track of info.tracks || []) {
-        const trackType = track.type || (track.video ? "video" : track.audio ? "audio" : "");
-        if (trackType !== "video" && trackType !== "audio") continue;
-        if (!track.codec) continue;
-        const mime = trackType + "/mp4; codecs=\"" + track.codec + "\"";
-        if (!MediaSource.isTypeSupported(mime)) continue;
-        const state = { sourceBuffer: mediaSource.addSourceBuffer(mime), queue: [], busy: false };
-        state.sourceBuffer.mode = "segments";
-        tracks.set(track.id, state);
-        mp4boxfile.setSegmentOptions(track.id, state, { nbSamples: 300, rapAlignement: true });
-      }
-      if (!tracks.size) throw new Error("Codec video/audio tidak didukung browser untuk streaming.");
-      const initial = mp4boxfile.initializeSegmentation("per-track") || [];
-      Promise.all(initial.map(async seg => {
-        const state = tracks.get(seg.id);
-        if (state && seg.buffer) await appendBufferAsync(state.sourceBuffer, seg.buffer);
-      })).then(() => {
-        if (!signal.aborted) { started = true; mp4boxfile.start(); }
-      }).catch(error => { parserError = error; });
-    } catch (error) {
-      parserError = error;
+  hls.on(Hls.Events.ERROR, (_event, data) => {
+    if (data?.fatal) {
+      setStatus(data.details || "HLS mengalami galat.");
     }
-  };
+  });
 
-  mp4boxfile.onSegment = (id, user, buffer, sampleNumber) => {
-    const state = user || tracks.get(id);
-    if (!state || !buffer) return;
-    state.queue.push(buffer);
-    appendQueue(state).catch(error => { parserError = error; });
-    setStatus("Streaming video...");
-  };
+  hls.loadSource(manifestUrl);
+  hls.attachMedia(video);
+  setStatus(
+    state.variants?.length
+      ? "Streaming adaptif " + state.variants.join(", ") + "p"
+      : "Streaming HLS siap."
+  );
 
-  try {
-    const plainChunkSize = Number(file.encryptionChunkSize);
-    if (!Number.isSafeInteger(plainChunkSize) || plainChunkSize <= 0) {
-      throw new Error("Metadata streaming video tidak valid.");
-    }
-    for (let i = 0; i < file.chunkCount; i++) {
-      if (signal.aborted) return;
-      if (parserError) throw parserError;
-      const encrypted = await IDB.videoChunk(archiveId, fileIndex, i);
-      const plain = await Crypto.decryptChunkWithKey(encrypted, archiveKey);
-      const data = plain.slice(0);
-      data.fileStart = Math.min(i * plainChunkSize, file.size);
-      mp4boxfile.appendBuffer(data);
-      setStatus("Menganalisis video " + Math.round(((i + 1) / file.chunkCount) * 100) + "%");
-      if (started) await waitForBufferRoom(video);
-    }
-    mp4boxfile.flush();
-    for (let i = 0; i < 120; i++) {
-      if (parserError) throw parserError;
-      const queuesEmpty = Array.from(tracks.values()).every(x => !x.busy && !x.queue.length);
-      if (started && queuesEmpty) break;
-      await new Promise(resolve => setTimeout(resolve, 250));
-    }
-    if (parserError) throw parserError;
-    if (mediaSource.readyState === "open") mediaSource.endOfStream();
-  } finally {
-    try { mp4boxfile.stop(); } catch {}
-    URL.revokeObjectURL(objectUrl);
-  }
+  return cleanup;
 }
 
-export function VideoStreamPreview({ file, archiveId, fileIndex, archiveKey, onError }) {
+export function VideoStreamPreview({
+  file,
+  archiveId,
+  fileIndex,
+  archiveKey,
+  canEdit = false,
+  onJobReady,
+  onError,
+}) {
   const videoRef = useRef(null);
   const [status, setStatus] = useState("Menyiapkan streaming...");
 
   useEffect(() => {
     const controller = new AbortController();
-    const video = videoRef.current;
+    let cleanupPlayer = () => {};
+
     const run = async () => {
       try {
-        if (!video) return;
-        const ext = String(file.name || "").toLowerCase().split(".").pop();
-        const isMp4Family = ["mp4", "m4v", "mov"].includes(ext) || file.type === "video/mp4" || file.type === "video/quicktime";
-        if (isMp4Family) {
-          await streamMp4({ video, file, archiveKey, archiveId, fileIndex, signal: controller.signal, setStatus });
-        } else {
-          await streamWebm({ video, file, archiveKey, archiveId, fileIndex, signal: controller.signal, setStatus });
+        let jobId = file.hlsJobId;
+
+        if (!jobId) {
+          if (!archiveKey) {
+            throw new Error("Kunci arsip tidak tersedia untuk menyiapkan HLS.");
+          }
+          setStatus("Membuat streaming HLS dari video...");
+          jobId = await createHlsFromExistingChunks(
+            file,
+            archiveId,
+            fileIndex,
+            archiveKey,
+            controller.signal,
+            setStatus
+          );
+          await onJobReady?.(jobId);
         }
-        if (!controller.signal.aborted) setStatus("Selesai memuat video.");
+
+        cleanupPlayer = await setupHlsVideo(
+          videoRef.current,
+          jobId,
+          controller.signal,
+          setStatus
+        );
       } catch (error) {
         if (!controller.signal.aborted) {
-          setStatus(error.message || "Streaming video gagal.");
+          setStatus(error.message || "Streaming HLS gagal.");
           onError?.(error);
         }
       }
     };
+
     run();
-    return () => controller.abort();
-  }, [file, archiveId, fileIndex, archiveKey, onError]);
+
+    return () => {
+      controller.abort();
+      cleanupPlayer();
+    };
+  }, [file, archiveId, fileIndex, archiveKey, onJobReady, onError]);
 
   return (
     <div style={{ width: "100%" }}>
