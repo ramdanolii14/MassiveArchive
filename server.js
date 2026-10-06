@@ -586,9 +586,12 @@ function preserveExistingFilePayloads(oldArc, newArc) {
 }
 
 function cleanupRemovedPayloads(oldArc, newArc) {
-  const kept = new Set((newArc.files || []).map(f => f.payloadRef).filter(Boolean));
+  const keptPayloads = new Set((newArc.files || []).map(f => f.payloadRef).filter(Boolean));
+  const keptHlsJobs = new Set((newArc.files || []).map(f => f.hlsJobId).filter(Boolean));
+
   for (const f of oldArc.files || []) {
-    if (f.payloadRef && !kept.has(f.payloadRef)) removeFileStorage(f);
+    if (f.payloadRef && !keptPayloads.has(f.payloadRef)) removeFileStorage(f);
+    if (f.hlsJobId && !keptHlsJobs.has(f.hlsJobId)) removeVideoJob(VIDEO_HLS_DIR, f.hlsJobId);
   }
 }
 
