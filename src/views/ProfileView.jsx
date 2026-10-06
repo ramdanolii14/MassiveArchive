@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { IDB }    from "../database.js";
 import { Crypto } from "../crypto.js";
 import { Avatar } from "../components/Avatar.jsx";
