@@ -205,8 +205,6 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
                   legacyPass,
                   value => setProg(value)
                 );
-                await IDB.updateUser(session.username, {});
-                await Promise.resolve(onSession({ ...session }));
                 toast(
                   result.migrated
                     ? `${result.migrated} arsip lama berhasil dipindahkan ke sistem aman.`
