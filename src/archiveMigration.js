@@ -10,7 +10,7 @@ const DEFAULT_SHARED = {
 
 async function encryptedFileData(archive, file, index, session) {
   if (file.encData) return file.encData;
-  return IDB.fileData(archive.id, index, session, "view");
+  return IDB.fileData(archive.id, index, session, "download");
 }
 
 export async function migrateLegacyArchives(session, legacyPassphrase, setProgress = () => {}) {
