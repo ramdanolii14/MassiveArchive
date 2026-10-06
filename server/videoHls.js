@@ -11,11 +11,11 @@ const ffprobePath = ffprobeStatic.path;
 
 export const VIDEO_HLS_CHUNK = 4 * 1024 * 1024;
 const JOB_ID_RE = /^[a-f0-9]{48}$/;
-const SERVER_KEY = process.env.SERVER_KEY || "";
+
 const running = new Map();
 
 function stateKey() {
-  return crypto.createHash("sha256").update(SERVER_KEY).digest();
+  return crypto.createHash("sha256").update(process.env.SERVER_KEY || "").digest();
 }
 
 function encryptState(value) {
@@ -288,6 +288,7 @@ async function transcodeToHls(root, jobId) {
     args.push("-bufsize:v:" + i, String(bitrateFor(height) * 2));
     args.push("-g:v:" + i, "120");
     args.push("-keyint_min:v:" + i, "120");
+    args.push("-force_key_frames:v:" + i, "expr:gte(t,n_forced*4)");
     args.push("-sc_threshold:v:" + i, "0");
 
     if (hasAudio) {
@@ -304,7 +305,6 @@ async function transcodeToHls(root, jobId) {
     .join(" ");
 
   args.push(
-    "-force_key_frames", "expr:gte(t,n_forced*4)",
     "-f", "hls",
     "-hls_time", "4",
     "-hls_playlist_type", "vod",
