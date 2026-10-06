@@ -104,7 +104,9 @@ export function ContentSearchView({ session, toast, onDetail }) {
             let plain;
 
             if (arc.keyMode === "envelope-v1") {
-              plain = await Crypto.decryptWithKey(encrypted, archiveKey);
+              plain = file.encryptionMode === "chunked-aes-gcm-v1"
+                ? await Crypto.decryptChunkedWithKey(encrypted, archiveKey, file.size, file.encryptionChunkSize)
+                : await Crypto.decryptWithKey(encrypted, archiveKey);
             } else {
               plain = await Crypto.decrypt(encrypted, session.passphrase);
             }
