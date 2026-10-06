@@ -37,7 +37,9 @@ export function WelcomeScreen({ onLogin }) {
     setBusy(true);
     try {
       const hash = await Crypto.hashPass(pass);
-      const user = await IDB.login(username.trim().toLowerCase(), hash);
+      const loginUser = await IDB.login(username.trim().toLowerCase(), hash);
+      const sessionUser = await IDB.me();
+      const user = { ...loginUser, ...sessionUser };
 
       let identity;
       let securityPatch = {};

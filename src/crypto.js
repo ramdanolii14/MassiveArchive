@@ -33,6 +33,9 @@ export const Crypto = {
   },
 
   async decrypt(encData, passphrase) {
+    if (encData === undefined || encData === null || encData === "") {
+      throw new Error("Data enkripsi akun tidak tersedia. Silakan masuk ulang.");
+    }
     const packed = toUint8Array(encData);
     if (packed.length < 29) {
       throw new Error(
