@@ -201,6 +201,27 @@ export function WelcomeScreen({ onLogin }) {
     try {
       const recoveryHash = await Crypto.hashRecoveryKey(key);
       const user = await IDB.recover(name, recoveryHash);
+
+      const legacyMeta = await IDB.listMeta({
+        scope: "owner",
+      }).catch(() => []);
+
+      const legacyCount = legacyMeta.filter(a =>
+        a.owner === user.username &&
+        a.keyMode !== "envelope-v1" &&
+        (a.fileCount || a.files?.length || 0) > 0
+      ).length;
+
+      if (legacyCount > 0) {
+        await IDB.logout().catch(() => {});
+        setErr(
+          `Akun ini masih memiliki ${legacyCount} arsip lama yang memakai kata kunci sebelumnya. Masuk menggunakan kata kunci lama terlebih dahulu, lalu gunakan "Pemulihan arsip lama" di Profil. Setelah arsip lama dipindahkan ke sistem aman, Recovery Key dapat digunakan tanpa mengunci data lama.`
+        );
+        setTab("login");
+        setBusy(false);
+        return;
+      }
+
       const identityPrivateKey = await Crypto.unlockIdentityWithRecovery(
         user.recoveryKeyBox,
         key
