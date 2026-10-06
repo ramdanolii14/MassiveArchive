@@ -40,7 +40,7 @@ function bufferedAhead(video) {
 }
 
 async function waitForBufferRoom(video) {
-  while (!video.paused && bufferedAhead(video) >= MAX_BUFFER_AHEAD) {
+  while (bufferedAhead(video) >= MAX_BUFFER_AHEAD) {
     await new Promise(resolve => setTimeout(resolve, 300));
   }
 }
@@ -81,7 +81,6 @@ async function streamWebm({ video, file, archiveKey, archiveId, fileIndex, signa
       const plain = await Crypto.decryptChunkWithKey(encrypted, archiveKey);
       await appendBufferAsync(sourceBuffer, plain);
       setStatus("Streaming " + Math.round(((i + 1) / file.chunkCount) * 100) + "%");
-      if (i === 0) video.play().catch(() => {});
     }
     while (sourceBuffer.updating) await waitForEvent(sourceBuffer, "updateend");
     if (mediaSource.readyState === "open") mediaSource.endOfStream();
@@ -133,9 +132,10 @@ async function streamMp4({ video, file, archiveKey, archiveId, fileIndex, signal
     ready = true;
     try {
       for (const track of info.tracks || []) {
-        if (track.type !== "video" && track.type !== "audio") continue;
+        const trackType = track.type || (track.video ? "video" : track.audio ? "audio" : "");
+        if (trackType !== "video" && trackType !== "audio") continue;
         if (!track.codec) continue;
-        const mime = track.type + "/mp4; codecs=\"" + track.codec + "\"";
+        const mime = trackType + "/mp4; codecs=\"" + track.codec + "\"";
         if (!MediaSource.isTypeSupported(mime)) continue;
         const state = { sourceBuffer: mediaSource.addSourceBuffer(mime), queue: [], busy: false };
         state.sourceBuffer.mode = "segments";
@@ -188,7 +188,6 @@ async function streamMp4({ video, file, archiveKey, archiveId, fileIndex, signal
     }
     if (parserError) throw parserError;
     if (mediaSource.readyState === "open") mediaSource.endOfStream();
-    video.play().catch(() => {});
   } finally {
     try { mp4boxfile.stop(); } catch {}
     URL.revokeObjectURL(objectUrl);
