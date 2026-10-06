@@ -98,7 +98,52 @@ async function attachJobToArchive(archiveId, fileIndex, file, jobId, canEdit) {
 
 async function setupHlsVideo(video, jobId, signal, setStatus) {
   const state = await waitForHlsReady(jobId, signal, setStatus);
-  const manifestUrl = "/api/video-stream/jobs/" + encodeURIComponent(jobId) + "/master.m3u8";
+  const manifestUrl =
+    "/api/video-stream/jobs/" + encodeURIComponent(jobId) + "/master.m3u8";
+
+  const mod = await import("hls.js");
+  const Hls = mod.default || mod;
+  const useNative =
+    "ManagedMediaSource" in window &&
+    isSafariNative(video);
+
+  if (useNative) {
+    video.src = manifestUrl;
+    video.load();
+    setStatus("Streaming HLS siap.");
+    return () => {};
+  }
+
+  if (Hls?.isSupported?.()) {
+    const hls = new Hls({
+      enableWorker: false,
+      backBufferLength: 30,
+      maxBufferLength: 30,
+      maxMaxBufferLength: 60,
+      xhrSetup: xhr => {
+        xhr.withCredentials = true;
+      },
+    });
+
+    const cleanup = () => {
+      hls.destroy();
+    };
+
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      if (data?.fatal) {
+        setStatus(data.details || "HLS mengalami galat.");
+      }
+    });
+
+    hls.loadSource(manifestUrl);
+    hls.attachMedia(video);
+    setStatus(
+      state.variants?.length
+        ? "Streaming adaptif " + state.variants.join(", ") + "p"
+        : "Streaming HLS siap."
+    );
+    return cleanup;
+  }
 
   if (isSafariNative(video)) {
     video.src = manifestUrl;
@@ -107,41 +152,7 @@ async function setupHlsVideo(video, jobId, signal, setStatus) {
     return () => {};
   }
 
-  const mod = await import("hls.js");
-  const Hls = mod.default || mod;
-  if (!Hls?.isSupported?.()) {
-    throw new Error("Browser ini tidak mendukung HLS melalui MediaSource.");
-  }
-
-  const hls = new Hls({
-    enableWorker: true,
-    backBufferLength: 30,
-    maxBufferLength: 30,
-    maxMaxBufferLength: 60,
-    xhrSetup: xhr => {
-      xhr.withCredentials = true;
-    },
-  });
-
-  const cleanup = () => {
-    hls.destroy();
-  };
-
-  hls.on(Hls.Events.ERROR, (_event, data) => {
-    if (data?.fatal) {
-      setStatus(data.details || "HLS mengalami galat.");
-    }
-  });
-
-  hls.loadSource(manifestUrl);
-  hls.attachMedia(video);
-  setStatus(
-    state.variants?.length
-      ? "Streaming adaptif " + state.variants.join(", ") + "p"
-      : "Streaming HLS siap."
-  );
-
-  return cleanup;
+  throw new Error("Browser ini tidak mendukung playback HLS.");
 }
 
 export function VideoStreamPreview({
