@@ -88,6 +88,26 @@ function archiveShardPath(id) {
   return path.join(ARCHIVE_DIR, `archive-${String(id).padStart(8, "0")}.arsip`);
 }
 
+function isProtectedMedia(file) {
+  const type = String(file?.type || "").toLowerCase();
+  const ext = String(file?.name || "").split(".").pop().toLowerCase();
+  return type.startsWith("image/") || type.startsWith("video/") ||
+    ["jpg","jpeg","png","webp","gif","bmp","avif","svg",
+      "mp4","webm","ogv","ogg","mov","m4v","mkv","avi","flv",
+      "wmv","3gp","mpeg","mpg","ts"].includes(ext);
+}
+
+function safeArchiveForClient(arc) {
+  if (!arc) return null;
+  return {
+    ...arc,
+    files: (arc.files || []).map(({ encData, payloadRef, previewData, ...f }) => ({
+      ...f,
+      hasPreview: Boolean(previewData),
+    })),
+  };
+}
+
 function archiveMetaOf(arc) {
   return {
     ...arc,
@@ -660,7 +680,7 @@ app.get("/api/archives", (req, res) => {
   const accessible = index.filter(a =>
     a.owner === req.user.username || (a.sharedWith || []).includes(req.user.username)
   );
-  res.json(accessible.map(a => readArchive(a.id)).filter(Boolean));
+  res.json(accessible.map(a => safeArchiveForClient(readArchive(a.id))).filter(Boolean));
 });
 
 app.get("/api/archives/:id", (req, res) => {
@@ -676,15 +696,7 @@ app.get("/api/archives/:id", (req, res) => {
     return res.status(403).json({ error: "Anda tidak memiliki akses untuk membuka arsip ini." });
   }
 
-  const perms = archivePermissions(arc, keyId, username);
-  const safeArc = {
-    ...arc,
-    files: (arc.files || []).map(({ encData, payloadRef, previewData, ...f }) => ({
-      ...f,
-      hasPreview: Boolean(previewData),
-    })),
-  };
-
+  const safeArc = safeArchiveForClient(arc);
   res.json(safeArc);
 });
 
@@ -712,12 +724,19 @@ app.get("/api/archives/:id/files/:idx", (req, res) => {
 
   let payload = null;
   if (purpose === "view") {
-    if (!f.previewData) {
-      return res.status(404).json({
-        error: "Preview aman untuk berkas ini belum tersedia."
-      });
+    if (isProtectedMedia(f)) {
+      if (!f.previewData) {
+        return res.status(404).json({
+          error: "Preview aman untuk berkas ini belum tersedia."
+        });
+      }
+      try { payload = Buffer.from(f.previewData, "base64"); } catch {}
+    } else if (f.payloadRef) {
+      const p = payloadPath(f.payloadRef);
+      if (p && fs.existsSync(p)) payload = fs.readFileSync(p);
+    } else if (f.encData) {
+      try { payload = Buffer.from(f.encData, "base64"); } catch {}
     }
-    try { payload = Buffer.from(f.previewData, "base64"); } catch {}
   } else if (f.payloadRef) {
     const p = payloadPath(f.payloadRef);
     if (p && fs.existsSync(p)) payload = fs.readFileSync(p);
