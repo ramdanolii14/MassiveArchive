@@ -25,15 +25,28 @@ function toAvatar(file) {
   });
 }
 
-export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
-  const [name,  setName]  = useState(session.username);
+export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {  const [name,  setName]  = useState(session.username);
   const [cur,   setCur]   = useState("");
   const [np,    setNp]    = useState("");
   const [np2,   setNp2]   = useState("");
   const [busy,  setBusy]  = useState("");
   const [legacyPass, setLegacyPass] = useState("");
+  const [legacyCount, setLegacyCount] = useState(null);
   const [prog,  setProg]  = useState("");
   const fileRef = useRef();
+
+  const loadLegacyCount = async () => {
+    try {
+      const metas = await IDB.listMeta({ scope: "owner" });
+      setLegacyCount(metas.filter(a =>
+        a.owner === session.username &&
+        a.keyMode !== "envelope-v1" &&
+        (a.fileCount || a.files?.length || 0) > 0
+      ).length);
+    } catch {
+      setLegacyCount(null);
+    }
+  };
 
   const pickAvatar = async (file) => {
     if (!file) return;
@@ -45,6 +58,10 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
       toast("Foto profil disimpan.");
     } catch (e) { toast(e.message || "Gagal menyimpan foto.", "err"); }
   };
+
+  useEffect(() => {
+    loadLegacyCount();
+  }, [session.username]);
 
   const removeAvatar = async () => {
     try {
@@ -183,6 +200,11 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
         <div className="note">
           Arsip yang dibuat sebelum sistem kunci per arsip masih dapat menggunakan password lama.
           Masukkan password lama sekali untuk memindahkannya ke sistem kunci baru.
+          {legacyCount !== null && (
+            <div style={{ marginTop: 6 }}>
+              Arsip lama yang perlu dipindahkan: <strong>{legacyCount}</strong>
+            </div>
+          )}
         </div>
         <div className="field" style={{ marginTop: 14 }}>
           <label>Password lama arsip</label>
@@ -205,6 +227,7 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
                   legacyPass,
                   value => setProg(value)
                 );
+                await loadLegacyCount();
                 toast(
                   result.migrated
                     ? `${result.migrated} arsip lama berhasil dipindahkan ke sistem aman.`
