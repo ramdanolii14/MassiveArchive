@@ -154,7 +154,14 @@ export function VideoStreamPreview({
   onError,
 }) {
   const videoRef = useRef(null);
+  const onJobReadyRef = useRef(onJobReady);
+  const onErrorRef = useRef(onError);
   const [status, setStatus] = useState("Menyiapkan streaming...");
+
+  useEffect(() => {
+    onJobReadyRef.current = onJobReady;
+    onErrorRef.current = onError;
+  }, [onJobReady, onError]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -177,7 +184,7 @@ export function VideoStreamPreview({
             controller.signal,
             setStatus
           );
-          await onJobReady?.(jobId);
+          await onJobReadyRef.current?.(jobId);
         }
 
         cleanupPlayer = await setupHlsVideo(
@@ -189,7 +196,7 @@ export function VideoStreamPreview({
       } catch (error) {
         if (!controller.signal.aborted) {
           setStatus(error.message || "Streaming HLS gagal.");
-          onError?.(error);
+          onErrorRef.current?.(error);
         }
       }
     };
@@ -200,7 +207,7 @@ export function VideoStreamPreview({
       controller.abort();
       cleanupPlayer();
     };
-  }, [file, archiveId, fileIndex, archiveKey, onJobReady, onError]);
+  }, [file, archiveId, fileIndex, archiveKey]);
 
   return (
     <div style={{ width: "100%" }}>
