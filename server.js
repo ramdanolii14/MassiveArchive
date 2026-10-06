@@ -31,7 +31,7 @@ const ARCHIVE_INDEX   = path.join(DB_DIR, "archives.index.arsip");
 const LEGACY_ARCHIVES = path.join(DB_DIR, "archives.arsip");
 const PAYLOAD_DIR     = path.join(DB_DIR, "payloads");
 const UPLOAD_DIR      = path.join(DB_DIR, "uploads");
-const MAX_FILE_SIZE   = 200 * 1024 * 1024;
+const MAX_FILE_SIZE   = 1024 * 1024 * 1024;
 const MAX_UPLOAD_SIZE = MAX_FILE_SIZE + 1024 * 1024;
 const UPLOAD_CHUNK    = 4 * 1024 * 1024;
 
@@ -609,7 +609,7 @@ function materializeUploads(files, archiveId, userId) {
 app.post("/api/uploads", (req, res) => {
   const size = Number(req.body?.size);
   if (!Number.isFinite(size) || size < 0 || size > MAX_UPLOAD_SIZE) {
-    return res.status(400).json({ error: "Ukuran berkas tidak valid atau melebihi 200 MB." });
+    return res.status(400).json({ error: "Ukuran berkas tidak valid atau melebihi 1 GB." });
   }
   const uploadId = newUploadId();
   writeUpload({
