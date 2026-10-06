@@ -356,6 +356,11 @@ app.get("/api/auth/me", authRequired, (req, res) => {
 app.use(authRequired);
 
 app.post("/api/auth/bootstrap-security", (req, res) => {
+  const session = sessions.get(req.sessionToken);
+  if (!session?.securityBootstrap) {
+    return res.status(403).json({ error: "Onboarding keamanan tidak diizinkan untuk sesi ini." });
+  }
+
   const users = readCol("users");
   const idx = users.findIndex(u => u.id === req.user.id);
   if (idx === -1) return res.status(404).json({ error: "Akun tidak ditemukan." });
