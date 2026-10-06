@@ -692,19 +692,6 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
           session.identityPrivateKey
         );
 
-        let currentFiles = current.files || [];
-        const generatedPreviews = await ensureSecurePreviews(current, archiveKey);
-        if (generatedPreviews) {
-          currentFiles = generatedPreviews;
-          await IDB.update(current.id, {
-            files: currentFiles,
-            keyMode: "envelope-v1",
-            keyEnvelopes: current.keyEnvelopes || [],
-            sharedWith: current.sharedWith || [],
-            updatedAt: new Date().toISOString(),
-          });
-        }
-
         const keyEnvelopes = [...(current.keyEnvelopes || [])];
         const existingKey = keyEnvelopes.findIndex(e => e.keyId === target.keyId);
         const wrappedKey = await Crypto.wrapKey(archiveKey, target.publicKey);
