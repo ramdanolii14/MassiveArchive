@@ -7,6 +7,7 @@ import { Avatar } from "../components/Avatar.jsx";
 import { OfficePreview } from "../components/OfficePreview.jsx";
 import { logAudit } from "../audit.js";
 import { createSecurePreview, previewKind } from "../securePreview.js";
+import { VideoStreamPreview } from "../components/VideoStreamPreview.jsx";
 
 const defaultSharedPermissions = {
   view: true,
@@ -154,6 +155,14 @@ function permissionSummary(p) {
   ].filter(Boolean).join(", ") || "Tidak ada akses";
 }
 
+async function unlockArchiveKeyForSession(arc, session) {
+  if (arc?.keyMode !== "envelope-v1") return null;
+  const envelope = (arc.keyEnvelopes || []).find(e => e.keyId === session.keyId);
+  if (!envelope || !session.identityPrivateKey) {
+    throw new Error("Kunci pribadi akun tidak memiliki akses ke arsip ini.");
+  }
+  return Crypto.unwrapKey(envelope.wrappedKey, session.identityPrivateKey);
+}
 export function DetailView({ recId, session, userAvatars, onBack, onDelete, toast, onReload }) {
   const [arc, setArc] = useState(null);
   const [prev, setPrev] = useState(null);
@@ -246,6 +255,17 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
       type.startsWith("text/") || ["txt","md","csv","log","json","xml","yaml","yml","html","htm","css","js","jsx","ts","tsx","svg"].includes(ext) ? "text" :
       ["doc","docx","xls","xlsx","ppt","pptx","odt","ods","odp","rtf"].includes(ext) ? "office" :
       "binary";
+
+    if (kind === "video" && file.storageMode === "chunks" && arc.keyMode === "envelope-v1") {
+      try {
+        const archiveKey = await unlockArchiveKeyForSession(arc, session);
+        setPrev({ file, idx, kind, videoStream: true, archiveKey, blob: null, url: null });
+        logAudit(session, "preview", { archiveId: arc.id, title: arc.title, fileName: file.name });
+      } catch (e) {
+        toast(e.message || "Gagal membuka streaming video.", "err");
+      }
+      return;
+    }
 
     const officeSupported = ["docx", "xlsx", "pptx"].includes(ext);
     let text = "";
@@ -425,7 +445,16 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
             </div>
             <div className="modal-body">
               {prev.kind === "image" && <img src={prev.url} alt={prev.file.name} className="img-thumb" />}
-              {prev.kind === "video" && (
+              {prev.kind === "video" && prev.videoStream && (
+                <VideoStreamPreview
+                  file={prev.file}
+                  archiveId={arc.id}
+                  fileIndex={prev.idx}
+                  archiveKey={prev.archiveKey}
+                  onError={error => toast(error.message || "Streaming video gagal.", "err")}
+                />
+              )}
+              {prev.kind === "video" && !prev.videoStream && (
                 <video
                   src={prev.url}
                   controls
