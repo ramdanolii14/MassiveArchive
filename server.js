@@ -389,8 +389,7 @@ app.post("/api/auth/bootstrap-security", (req, res) => {
   }
 
   writeCol("users", users);
-  const session = sessions.get(req.sessionToken);
-  if (session) session.securityBootstrap = false;
+  session.securityBootstrap = false;
 
   res.json(authUser(users[idx]));
 });
