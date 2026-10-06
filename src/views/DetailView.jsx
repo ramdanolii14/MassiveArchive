@@ -89,7 +89,7 @@ async function rotateAfterRevoke(current, revokedUsername, session, users, setPr
         oldOwnerEnvelope.wrappedKey,
         session.identityPrivateKey
       );
-      const oldCipher = await IDB.fileData(current.id, i, session, "view");
+      const oldCipher = await IDB.fileData(current.id, i, session, "download");
       plain = await Crypto.decryptWithKey(oldCipher, oldArchiveKey);
     } else if (oldFile.encData) {
       plain = await Crypto.decrypt(oldFile.encData, session.passphrase);
@@ -100,13 +100,27 @@ async function rotateAfterRevoke(current, revokedUsername, session, users, setPr
 
     const encData = await Crypto.encryptWithKey(plain, archiveKey);
     const uploadId = await uploadEncryptedPayload(encData, oldFile, setProg);
-    files.push({
+    const nextFile = {
       name: oldFile.name,
       type: oldFile.type,
       size: oldFile.size,
       addedAt: oldFile.addedAt || new Date().toISOString(),
       uploadId,
-    });
+    };
+
+    if (previewKind(oldFile)) {
+      const preview = await createSecurePreview(plain, oldFile);
+      if (preview?.blob) {
+        nextFile.previewData = await Crypto.encryptWithKey(
+          await preview.blob.arrayBuffer(),
+          archiveKey
+        );
+        nextFile.previewType = preview.type;
+        nextFile.previewSize = preview.size;
+      }
+    }
+
+    files.push(nextFile);
   }
 
   const oldEnvelopes = new Map(
@@ -553,7 +567,7 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      if (!previewKind(file) || file.previewData) continue;
+      if (!previewKind(file) || file.previewData || file.hasPreview) continue;
 
       const encrypted = await IDB.fileData(fullArc.id, i, session, "download");
       const plain = await Crypto.decryptWithKey(encrypted, archiveKey);
