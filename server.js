@@ -808,7 +808,7 @@ app.get("/api/archives/:id/files/:idx/chunks/:chunkIndex", (req, res) => {
   res.setHeader("Content-Length", fs.statSync(p).size);
   fs.createReadStream(p).pipe(res);
 });
-app.get("/api/archives/:id/files/:idx", (req, res) => {
+app.get("/api/archives/:id/files/:idx", async (req, res) => {
   const id = parseInt(req.params.id, 10);
   const idx = parseInt(req.params.idx, 10);
   const arc = readArchive(id);
