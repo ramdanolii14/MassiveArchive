@@ -606,7 +606,8 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
     const files = [];
     for (let i = 0; i < (fullArc.files || []).length; i++) {
       const f = fullArc.files[i];
-      const plain = await Crypto.decrypt(f.encData, session.passphrase);
+      const encrypted = await IDB.fileData(fullArc.id, i, session, "download");
+      const plain = await Crypto.decrypt(encrypted, session.passphrase);
       const nextFile = {
         ...f,
         encData: await Crypto.encryptWithKey(plain, archiveKey),
