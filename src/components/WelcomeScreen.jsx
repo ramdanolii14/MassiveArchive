@@ -2,6 +2,7 @@ import { useState } from "react";
 import { IDB }         from "../database.js";
 import { Crypto }      from "../crypto.js";
 import { passStrength } from "../utils.js";
+import { migrateLegacyArchives } from "../archiveMigration.js";
 
 function sessionFromUser(user, passphrase, identityPrivateKey) {
   return {
@@ -74,6 +75,17 @@ export function WelcomeScreen({ onLogin }) {
         if (!identity.privateKeyBox) {
           throw new Error("Kunci keamanan akun belum tersedia.");
         }
+
+        await migrateLegacyArchives(
+          {
+            username: user.username,
+            publicKey: identity.publicKey,
+            keyId: identity.keyId,
+            identityPrivateKey: identity.privateKey,
+          },
+          pass,
+          () => {}
+        );
 
         const recovery = await Crypto.createRecoveryBundle(
           identity.privateKeyBox,
@@ -215,6 +227,7 @@ export function WelcomeScreen({ onLogin }) {
     setTab(next);
     setErr("");
     setRecoveryNotice("");
+    setMigrationProgress("");
     setPass("");
     setPass2("");
     setRecoveryKey("");
