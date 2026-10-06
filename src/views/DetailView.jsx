@@ -626,6 +626,11 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
         const existingKey = keyEnvelopes.findIndex(e => e.keyId === target.keyId);
         const wrappedKey = await Crypto.wrapKey(archiveKey, target.publicKey);
         const entry = buildEnvelope(recipient, target, permissions);
+        entry.wrappedKey = wrappedKey;
+
+        if (!entry.wrappedKey) {
+          throw new Error("Kunci berbagi gagal dibuat.");
+        }
 
         if (existingKey >= 0) keyEnvelopes[existingKey] = entry;
         else keyEnvelopes.push(entry);
