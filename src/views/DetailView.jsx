@@ -16,6 +16,41 @@ const defaultSharedPermissions = {
   reshare: false,
 };
 
+async function uploadRotatedVideoChunks(current, oldFile, fileIndex, oldArchiveKey, newArchiveKey, session, setProg) {
+  const size = Number(oldFile.size);
+  const plainChunkSize = Number(oldFile.encryptionChunkSize);
+  const chunkCount = Number(oldFile.chunkCount);
+  const encryptedSize = Number(oldFile.encryptedSize);
+  if (!Number.isSafeInteger(size) || size < 0 || !Number.isSafeInteger(plainChunkSize) || plainChunkSize <= 0 ||
+      !Number.isSafeInteger(chunkCount) || chunkCount <= 0 || !Number.isSafeInteger(encryptedSize) || encryptedSize <= 0) {
+    throw new Error("Metadata video chunk tidak valid untuk rotasi kunci.");
+  }
+
+  const state = await IDB.startUpload({
+    size: encryptedSize,
+    name: oldFile.name,
+    type: oldFile.type,
+  });
+  let offset = state.received || 0;
+  try {
+    for (let i = 0; i < chunkCount; i++) {
+      const encryptedOld = await IDB.videoChunk(current.id, fileIndex, i);
+      const plain = await Crypto.decryptChunkWithKey(encryptedOld, oldArchiveKey);
+      const encryptedNew = await Crypto.encryptChunkWithKey(plain, newArchiveKey);
+      const result = await IDB.uploadChunk(state.uploadId, offset, encryptedNew);
+      offset = result.received;
+      setProg?.("Menyiapkan ulang " + oldFile.name + " " + Math.round(((i + 1) / chunkCount) * 100) + "%");
+    }
+    return {
+      uploadId: state.uploadId,
+      encryptionMode: "chunked-aes-gcm-v1",
+      encryptionChunkSize: plainChunkSize,
+    };
+  } catch (error) {
+    await IDB.cancelUpload(state.uploadId).catch(() => {});
+    throw error;
+  }
+}
 async function rotateAfterRevoke(current, revokedUsername, session, users, setProg) {
   if (current.owner !== session.username) {
     throw new Error("Hanya pemilik yang dapat merotasi kunci saat mencabut akses.");
@@ -60,6 +95,17 @@ async function rotateAfterRevoke(current, revokedUsername, session, users, setPr
         oldOwnerEnvelope.wrappedKey,
         session.identityPrivateKey
       );
+      if (oldFile.storageMode === "chunks" && oldFile.encryptionMode === "chunked-aes-gcm-v1") {
+        const uploaded = await uploadRotatedVideoChunks(current, oldFile, i, oldArchiveKey, archiveKey, session, setProg);
+        files.push({
+          name: oldFile.name,
+          type: oldFile.type,
+          size: oldFile.size,
+          addedAt: oldFile.addedAt || new Date().toISOString(),
+          ...uploaded,
+        });
+        continue;
+      }
       const oldCipher = await IDB.fileData(current.id, i, session, "download");
       plain = oldFile.encryptionMode === "chunked-aes-gcm-v1"
         ? await Crypto.decryptChunkedWithKey(oldCipher, oldArchiveKey, oldFile.size, oldFile.encryptionChunkSize)
