@@ -49,14 +49,8 @@ Peluk Keamanan xD
 
 ---
 
-## Windows: jalankan otomatis dari flashdisk
+## Menjalankan dari flashdisk
 
-Fitur ini membuat komputer Windows memantau drive USB dan menjalankan `npm start` otomatis ketika menemukan folder `MassiveArchive` yang memiliki file penanda `.massivearchive-usb`.
+Letakkan seluruh project MassiveArchive di flashdisk. File `START_MASSIVEARCHIVE.cmd` di akar project menjalankan `npm start` dari lokasi flashdisk itu sendiri, sehingga `database/` dan `.env` tetap menggunakan project di flashdisk.
 
-Jalankan sekali di komputer Windows dari folder `scripts`:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install-windows-usb-autostart.ps1
-```
-
-Setelah pemasangan, folder project, `database/`, dan file `.env` tetap berada di flashdisk. Komputer hanya menyimpan watcher kecil di profil pengguna Windows.
+`autorun.inf` juga disertakan untuk AutoRun/AutoPlay pada Windows yang masih mengizinkan AutoRun media removable. Windows modern dapat menonaktifkan atau membatasi AutoRun untuk flashdisk, sehingga cara paling andal tetap menjalankan `START_MASSIVEARCHIVE.cmd` dari flashdisk.
