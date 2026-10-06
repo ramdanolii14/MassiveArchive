@@ -125,6 +125,8 @@ export const IDB = {
       "Content-Type": "application/octet-stream",
       "X-Upload-Offset": String(offset),
     }),
+  videoChunk: (id, idx, chunkIndex) =>
+    reqBinary(`/archives/${id}/files/${idx}/chunks/${chunkIndex}`),
   cancelUpload: (uploadId) => req("DELETE", `/uploads/${uploadId}`),
 
   // Storage
