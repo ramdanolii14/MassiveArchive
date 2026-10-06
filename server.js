@@ -1120,7 +1120,10 @@ app.delete("/api/archives/:id/permanent", (req, res) => {
   const actor = req.user.username;
   if (current.owner !== actor) return res.status(403).json({ error: "Hanya pemilik yang dapat menghapus permanen." });
   const full = readArchive(id);
-  for (const f of full?.files || []) {\n    removeFileStorage(f);\n    if (f.hlsJobId) removeVideoJob(VIDEO_HLS_DIR, f.hlsJobId);\n  }
+  for (const f of full?.files || []) {
+    removeFileStorage(f);
+    if (f.hlsJobId) removeVideoJob(VIDEO_HLS_DIR, f.hlsJobId);
+  }
   removeArchive(id);
   writeArchiveIndex(archivesMeta().filter(a => a.id !== id));
   res.json({ ok: true, permanent: true });
