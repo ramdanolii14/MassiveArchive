@@ -84,8 +84,7 @@ async function rotateAfterRevoke(current, revokedUsername, session, users, setPr
       ...uploaded,
     };
 
-    if (previewKind(oldFile)) {
-      if (oldFile.size > 50 * 1024 * 1024) continue;
+    if (previewKind(oldFile) && oldFile.size <= 50 * 1024 * 1024) {
       const preview = await createSecurePreview(plain, oldFile);
       if (preview?.blob) {
         nextFile.previewData = await Crypto.encryptWithKey(
