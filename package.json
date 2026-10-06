@@ -22,7 +22,8 @@
     "pptx-preview": "^1.0.7",
     "pdfjs-dist": "^6.3.289",
     "mammoth": "^1.13.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "mp4box": "^2.4.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
