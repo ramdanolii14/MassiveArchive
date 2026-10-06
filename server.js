@@ -91,7 +91,10 @@ function archiveShardPath(id) {
 function archiveMetaOf(arc) {
   return {
     ...arc,
-    files: (arc.files || []).map(({ encData, ...f }) => f),
+    files: (arc.files || []).map(({ encData, payloadRef, previewData, ...f }) => ({
+      ...f,
+      hasPreview: Boolean(previewData),
+    })),
   };
 }
 
@@ -645,7 +648,17 @@ app.get("/api/archives/:id", (req, res) => {
   if (!canReadArchive(arc, keyId, username)) {
     return res.status(403).json({ error: "Anda tidak memiliki akses untuk membuka arsip ini." });
   }
-  res.json(arc);
+
+  const perms = archivePermissions(arc, keyId, username);
+  const safeArc = {
+    ...arc,
+    files: (arc.files || []).map(({ encData, payloadRef, previewData, ...f }) => ({
+      ...f,
+      hasPreview: Boolean(previewData),
+    })),
+  };
+
+  res.json(safeArc);
 });
 
 app.get("/api/archives/:id/files/:idx", (req, res) => {
@@ -669,13 +682,22 @@ app.get("/api/archives/:id/files/:idx", (req, res) => {
 
   const f = arc.files?.[idx];
   if (!f) return res.status(404).json({ error: "Tidak ditemukan" });
+
   let payload = null;
-  if (f.payloadRef) {
+  if (purpose === "view") {
+    if (!f.previewData) {
+      return res.status(404).json({
+        error: "Preview aman untuk berkas ini belum tersedia."
+      });
+    }
+    try { payload = Buffer.from(f.previewData, "base64"); } catch {}
+  } else if (f.payloadRef) {
     const p = payloadPath(f.payloadRef);
     if (p && fs.existsSync(p)) payload = fs.readFileSync(p);
   } else if (f.encData) {
     try { payload = Buffer.from(f.encData, "base64"); } catch {}
   }
+
   if (!payload) return res.status(404).json({ error: "Data berkas tidak ditemukan" });
   res.setHeader("Content-Type", "application/octet-stream");
   res.setHeader("Content-Length", payload.length);
