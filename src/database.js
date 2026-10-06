@@ -127,6 +127,18 @@ export const IDB = {
     }),
   videoChunk: (id, idx, chunkIndex) =>
     reqBinary(`/archives/${id}/files/${idx}/chunks/${chunkIndex}`),
+
+  // HLS video processing
+  videoJobStart: (meta) => req("POST", "/video-jobs", meta),
+  videoJobStatus: (jobId) => req("GET", `/video-jobs/${jobId}`),
+  videoJobChunk: (jobId, offset, chunk) =>
+    uploadReq("PUT", `/video-jobs/${jobId}/chunks`, chunk, {
+      "Content-Type": "application/octet-stream",
+      "X-Video-Offset": String(offset),
+    }),
+  videoJobFinish: (jobId) => req("POST", `/video-jobs/${jobId}/finish`),
+  videoJobCancel: (jobId) => req("DELETE", `/video-jobs/${jobId}`),
+
   cancelUpload: (uploadId) => req("DELETE", `/uploads/${uploadId}`),
 
   // Storage
