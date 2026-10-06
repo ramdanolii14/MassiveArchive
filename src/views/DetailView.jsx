@@ -207,7 +207,11 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
       }
 
       setDecBusy(null);
-      return new Blob([plain], { type: file.type || "application/octet-stream" });
+      const outputType =
+        purpose === "view" && file.previewType
+          ? file.previewType
+          : file.type || "application/octet-stream";
+      return new Blob([plain], { type: outputType });
     } catch (e) {
       setDecBusy(null);
       toast(e.message || "Gagal membuka berkas.", "err");
