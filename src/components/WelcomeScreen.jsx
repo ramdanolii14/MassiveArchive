@@ -2,6 +2,7 @@ import { useState } from "react";
 import { IDB }         from "../database.js";
 import { Crypto }      from "../crypto.js";
 import { passStrength } from "../utils.js";
+import { migrateLegacyArchives } from "../archiveMigration.js";
 
 function sessionFromUser(user, passphrase, identityPrivateKey) {
   return {
@@ -24,6 +25,7 @@ export function WelcomeScreen({ onLogin }) {
   const [busy, setBusy] = useState(false);
   const [recoveryNotice, setRecoveryNotice] = useState("");
   const [pendingSession, setPendingSession] = useState(null);
+  const [migrationProgress, setMigrationProgress] = useState("");
 
   const strength = passStrength(pass);
 
@@ -75,6 +77,17 @@ export function WelcomeScreen({ onLogin }) {
           throw new Error("Kunci keamanan akun belum tersedia.");
         }
 
+        await migrateLegacyArchives(
+          {
+            username: user.username,
+            publicKey: identity.publicKey,
+            keyId: identity.keyId,
+            identityPrivateKey: identity.privateKey,
+          },
+          pass,
+          value => setMigrationProgress(value)
+        );
+
         const recovery = await Crypto.createRecoveryBundle(
           identity.privateKeyBox,
           pass
@@ -107,6 +120,7 @@ export function WelcomeScreen({ onLogin }) {
     } catch (e) {
       setErr(e.message || "Username atau kata kunci salah.");
     }
+    setMigrationProgress("");
     setBusy(false);
   };
 
@@ -215,6 +229,7 @@ export function WelcomeScreen({ onLogin }) {
     setTab(next);
     setErr("");
     setRecoveryNotice("");
+    setMigrationProgress("");
     setPass("");
     setPass2("");
     setRecoveryKey("");
@@ -237,6 +252,11 @@ export function WelcomeScreen({ onLogin }) {
           <div className="auth-sub">
             Akun lama Anda sudah berhasil dilengkapi fitur pemulihan. Data dan arsip lama tetap dipertahankan.
           </div>
+          {migrationProgress && (
+            <div className="note" style={{ marginTop: 12 }}>
+              Migrasi arsip lama: {migrationProgress}
+            </div>
+          )}
           <div className="recovery-key">{recoveryNotice}</div>
           <div className="note" style={{ marginTop: 16 }}>
             Simpan Recovery Key di tempat pribadi yang aman. Recovery Key tidak dapat ditampilkan kembali oleh MassiveArchive.
