@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { IDB }    from "../database.js";
 import { Crypto } from "../crypto.js";
 import { Avatar } from "../components/Avatar.jsx";
+import { migrateLegacyArchives } from "../archiveMigration.js";
 
 const AVATAR_SIZE = 256;
 
@@ -30,6 +31,7 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
   const [np,    setNp]    = useState("");
   const [np2,   setNp2]   = useState("");
   const [busy,  setBusy]  = useState("");
+  const [legacyPass, setLegacyPass] = useState("");
   const [prog,  setProg]  = useState("");
   const fileRef = useRef();
 
@@ -172,6 +174,53 @@ export function ProfileView({ session, avatar, onAvatar, onSession, toast }) {
           <button className="btn btn-p btn-sm" onClick={saveName}
             disabled={busy === "name" || name.trim().toLowerCase() === session.username}>
             Simpan
+          </button>
+        </div>
+      </div>
+
+      <div className="panel pad">
+        <div className="df-lbl" style={{ marginBottom: 8 }}>Pemulihan arsip lama</div>
+        <div className="note">
+          Arsip yang dibuat sebelum sistem kunci per arsip masih dapat menggunakan password lama.
+          Masukkan password lama sekali untuk memindahkannya ke sistem kunci baru.
+        </div>
+        <div className="field" style={{ marginTop: 14 }}>
+          <label>Password lama arsip</label>
+          <input
+            type="password"
+            value={legacyPass}
+            onChange={e => setLegacyPass(e.target.value)}
+            autoComplete="off"
+          />
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <button
+            className="btn btn-s btn-sm"
+            disabled={busy === "legacy" || !legacyPass}
+            onClick={async () => {
+              setBusy("legacy");
+              try {
+                const result = await migrateLegacyArchives(
+                  session,
+                  legacyPass,
+                  value => setProg(value)
+                );
+                await IDB.updateUser(session.username, {});
+                await Promise.resolve(onSession({ ...session }));
+                toast(
+                  result.migrated
+                    ? `${result.migrated} arsip lama berhasil dipindahkan ke sistem aman.`
+                    : "Tidak ada arsip lama yang perlu dipindahkan."
+                );
+                setLegacyPass("");
+              } catch (e) {
+                toast(e.message || "Gagal memulihkan akses arsip lama.", "err");
+              }
+              setProg("");
+              setBusy("");
+            }}
+          >
+            {busy === "legacy" ? (prog ? `Memindahkan ${prog}` : "Memproses...") : "Pulihkan akses arsip lama"}
           </button>
         </div>
       </div>
