@@ -17,13 +17,13 @@ export function previewKind(file) {
   return null;
 }
 
-export async function createSecurePreview(buffer, file) {
+export async function createSecurePreview(input, file) {
   const kind = previewKind(file);
   if (!kind) return null;
 
-  const source = new Blob([buffer], {
-    type: file.type || "application/octet-stream",
-  });
+  const source = input instanceof Blob
+    ? input
+    : new Blob([input], { type: file.type || "application/octet-stream" });
 
   if (kind === "image") {
     return createImagePreview(source);
