@@ -232,7 +232,8 @@ export function WelcomeScreen({ onLogin }) {
     return (
       <div className="auth-wrap">
         <div className="auth-card">
-          <div className="auth-title">Simpan Recovery Key</div>
+          <div className="auth-title">Akun berhasil disiapkan</div>
+          <div style={{ fontWeight: 600, marginTop: 18, marginBottom: 8 }}>Simpan Recovery Key</div>
           <div className="auth-sub">
             Akun lama Anda sudah berhasil dilengkapi fitur pemulihan. Data dan arsip lama tetap dipertahankan.
           </div>
