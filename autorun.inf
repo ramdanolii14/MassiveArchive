@@ -1,0 +1,7 @@
+[AutoRun]
+label=MassiveArchive
+action=Jalankan MassiveArchive
+open=START_MASSIVEARCHIVE.cmd
+shell=Jalankan MassiveArchive
+shell\JalankanMassiveArchive=Jalankan MassiveArchive
+shell\JalankanMassiveArchive\command=START_MASSIVEARCHIVE.cmd
