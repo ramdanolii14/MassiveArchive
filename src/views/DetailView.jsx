@@ -288,8 +288,6 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
       toast("Anda tidak memiliki izin melihat arsip ini.", "err");
       return;
     }
-    const blob = await decrypt(file, idx);
-    if (!blob) return;
 
     const ext = fileExtension(file.name);
     const type = (file.type || "").toLowerCase();
@@ -312,6 +310,9 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
       }
       return;
     }
+
+    const blob = await decrypt(file, idx);
+    if (!blob) return;
 
     const officeSupported = ["docx", "xlsx", "pptx"].includes(ext);
     let text = "";
