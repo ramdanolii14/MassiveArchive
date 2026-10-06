@@ -6,6 +6,7 @@ import { EditForm } from "./ArchiveViews.jsx";
 import { Avatar } from "../components/Avatar.jsx";
 import { OfficePreview } from "../components/OfficePreview.jsx";
 import { logAudit } from "../audit.js";
+import { createSecurePreview, previewKind } from "../securePreview.js";
 
 const defaultSharedPermissions = {
   view: true,
@@ -539,6 +540,34 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
     };
   };
 
+  const ensureSecurePreviews = async (fullArc, archiveKey) => {
+    const files = [...(fullArc.files || [])];
+    let changed = false;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      if (!previewKind(file) || file.previewData) continue;
+
+      const encrypted = await IDB.fileData(fullArc.id, i, session, "download");
+      const plain = await Crypto.decryptWithKey(encrypted, archiveKey);
+      const preview = await createSecurePreview(plain, file);
+      if (!preview?.blob) continue;
+
+      files[i] = {
+        ...file,
+        previewData: await Crypto.encryptWithKey(
+          await preview.blob.arrayBuffer(),
+          archiveKey
+        ),
+        previewType: preview.type,
+        previewSize: preview.size,
+      };
+      changed = true;
+    }
+
+    return changed ? files : null;
+  };
+
   const legacyPermissionsFor = (fullArc, username, nextPermissions) => {
     const env = (fullArc.keyEnvelopes || []).find(e => e.username === username);
     if (username === recipient) return { ...defaultSharedPermissions, ...nextPermissions };
@@ -568,12 +597,27 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
 
     const archiveKey = Crypto.randomContentKey();
     const files = [];
-    for (const f of fullArc.files || []) {
+    for (let i = 0; i < (fullArc.files || []).length; i++) {
+      const f = fullArc.files[i];
       const plain = await Crypto.decrypt(f.encData, session.passphrase);
-      files.push({
+      const nextFile = {
         ...f,
         encData: await Crypto.encryptWithKey(plain, archiveKey),
-      });
+      };
+
+      if (previewKind(f)) {
+        const preview = await createSecurePreview(plain, f);
+        if (preview?.blob) {
+          nextFile.previewData = await Crypto.encryptWithKey(
+            await preview.blob.arrayBuffer(),
+            archiveKey
+          );
+          nextFile.previewType = preview.type;
+          nextFile.previewSize = preview.size;
+        }
+      }
+
+      files.push(nextFile);
     }
 
     const keyEnvelopes = [];
@@ -625,6 +669,19 @@ export function ShareModal({ arc, session, onClose, toast, onReload }) {
           archiveEnvelope.wrappedKey,
           session.identityPrivateKey
         );
+
+        let currentFiles = current.files || [];
+        const generatedPreviews = await ensureSecurePreviews(current, archiveKey);
+        if (generatedPreviews) {
+          currentFiles = generatedPreviews;
+          await IDB.update(current.id, {
+            files: currentFiles,
+            keyMode: "envelope-v1",
+            keyEnvelopes: current.keyEnvelopes || [],
+            sharedWith: current.sharedWith || [],
+            updatedAt: new Date().toISOString(),
+          });
+        }
 
         const keyEnvelopes = [...(current.keyEnvelopes || [])];
         const existingKey = keyEnvelopes.findIndex(e => e.keyId === target.keyId);
