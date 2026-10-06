@@ -75,27 +75,6 @@ async function createHlsFromExistingChunks(file, archiveId, fileIndex, archiveKe
   }
 }
 
-async function attachJobToArchive(archiveId, fileIndex, file, jobId, canEdit) {
-  if (!canEdit || file.hlsJobId === jobId) return;
-  const nextFiles = [];
-  const fresh = await IDB.get(archiveId);
-  if (!fresh?.files?.length) return;
-
-  for (let i = 0; i < fresh.files.length; i++) {
-    nextFiles.push(
-      i === fileIndex
-        ? { ...fresh.files[i], hlsJobId: jobId, hlsStatus: "processing" }
-        : fresh.files[i]
-    );
-  }
-
-  await IDB.update(
-    archiveId,
-    { files: nextFiles, updatedAt: new Date().toISOString() },
-    null
-  ).catch(() => {});
-}
-
 async function setupHlsVideo(video, jobId, signal, setStatus) {
   const state = await waitForHlsReady(jobId, signal, setStatus);
   const manifestUrl =
