@@ -434,7 +434,14 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
             <div className="modal-body">
               {prev.kind === "image" && <img src={prev.url} alt={prev.file.name} className="img-thumb" />}
               {prev.kind === "video" && (
-                <video src={prev.url} controls playsInline style={{ maxWidth: "100%", maxHeight: "70vh" }} />
+                <video
+                  src={prev.url}
+                  controls
+                  controlsList="nodownload"
+                  playsInline
+                  onContextMenu={e => e.preventDefault()}
+                  style={{ maxWidth: "100%", maxHeight: "70vh" }}
+                />
               )}
               {prev.kind === "audio" && (
                 <div style={{ width: "100%", padding: "30px 10px" }}>
