@@ -368,17 +368,19 @@ export function finishVideoJob(root, jobId) {
   updateVideoJob(root, jobId, { status: "queued", progress: 0 });
 
   transcodeToHls(root, jobId).catch(error => {
+    const current = readVideoJob(root, jobId);
     const next = updateVideoJob(root, jobId, {
       status: "failed",
       error: error.message,
       progress: 0,
     });
+    if (current) {
+      const input = sourcePath(root, jobId, current.extension);
+      try { fs.unlinkSync(input); } catch {}
+    }
     const out = next ? hlsOutputDir(root, jobId) : null;
-    for (const p of [
-      out && path.join(out, ".hls-key"),
-      out && path.join(out, ".hls-key-info"),
-    ].filter(Boolean)) {
-      try { fs.unlinkSync(p); } catch {}
+    if (out && fs.existsSync(out)) {
+      try { fs.rmSync(out, { recursive: true, force: true }); } catch {}
     }
   });
 
