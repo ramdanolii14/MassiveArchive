@@ -355,6 +355,46 @@ app.get("/api/auth/me", authRequired, (req, res) => {
 
 app.use(authRequired);
 
+app.post("/api/auth/bootstrap-security", (req, res) => {
+  const session = sessions.get(req.sessionToken);
+  if (!session?.securityBootstrap) {
+    return res.status(403).json({ error: "Onboarding keamanan tidak diizinkan untuk sesi ini." });
+  }
+
+  const users = readCol("users");
+  const idx = users.findIndex(u => u.id === req.user.id);
+  if (idx === -1) return res.status(404).json({ error: "Akun tidak ditemukan." });
+
+  const hasRecovery = Boolean(
+    users[idx].recoveryHash && users[idx].recoveryKeyBox
+  );
+
+  if (hasRecovery) {
+    return res.status(409).json({
+      error: "Recovery Key akun ini sudah tersedia."
+    });
+  }
+
+  const fields = ["publicKey", "keyId", "privateKeyBox", "recoveryHash", "recoveryKeyBox"];
+  for (const field of fields) {
+    if (!req.body?.[field]) {
+      return res.status(400).json({
+        error: "Data keamanan akun belum lengkap."
+      });
+    }
+  }
+
+  for (const field of fields) {
+    users[idx][field] = req.body[field];
+  }
+
+  writeCol("users", users);
+  const session = sessions.get(req.sessionToken);
+  if (session) session.securityBootstrap = false;
+
+  res.json(authUser(users[idx]));
+});
+
 // ════════════════════════════════════════════════════════════════
 // ROUTES — Archives
 // ════════════════════════════════════════════════════════════════

@@ -107,6 +107,7 @@ export const IDB = {
   login: (username, passHash) => req("POST", "/auth/login", { username, passHash }),
   register: (data) => req("POST", "/auth/register", data),
   recover: (username, recoveryHash) => req("POST", "/auth/recover", { username, recoveryHash }),
+  bootstrapSecurity: (data) => req("POST", "/auth/bootstrap-security", data),
   me: () => req("GET", "/auth/me"),
   logout: () => req("POST", "/auth/logout"),
 
