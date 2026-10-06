@@ -259,9 +259,9 @@ function authUser(user, includeRecoveryBox = false) {
     id: user.id,
     username: user.username,
     avatar: user.avatar || null,
-    publicKey: user.publicKey,
-    keyId: user.keyId,
-    privateKeyBox: user.privateKeyBox,
+    publicKey: user.publicKey || null,
+    keyId: user.keyId || null,
+    privateKeyBox: user.privateKeyBox || null,
     createdAt: user.createdAt,
     hasRecovery: Boolean(user.recoveryHash && user.recoveryKeyBox),
   };

@@ -37,9 +37,10 @@ export function WelcomeScreen({ onLogin }) {
     setBusy(true);
     try {
       const hash = await Crypto.hashPass(pass);
-      const loginUser = await IDB.login(username.trim().toLowerCase(), hash);
-      const sessionUser = await IDB.me();
-      const user = { ...loginUser, ...sessionUser };
+      const user = await IDB.login(username.trim().toLowerCase(), hash);
+      if (!user?.username) {
+        throw new Error("Data akun dari server tidak lengkap.");
+      }
 
       let identity;
       let securityPatch = {};
@@ -49,10 +50,14 @@ export function WelcomeScreen({ onLogin }) {
           identity = {
             publicKey: user.publicKey,
             keyId: user.keyId,
+            privateKeyBox: user.privateKeyBox,
             privateKey: await Crypto.unlockIdentity(user.privateKeyBox, pass),
           };
         } else {
           identity = await Crypto.createIdentity(pass);
+          if (!identity?.privateKeyBox || !identity?.publicKey || !identity?.keyId) {
+            throw new Error("Gagal membuat identitas keamanan akun.");
+          }
           securityPatch = {
             publicKey: identity.publicKey,
             keyId: identity.keyId,
@@ -66,6 +71,9 @@ export function WelcomeScreen({ onLogin }) {
       }
 
       if (!user.hasRecovery) {
+        if (!identity.privateKeyBox) {
+          throw new Error("Kunci keamanan akun belum tersedia.");
+        }
         const recovery = await Crypto.createRecoveryBundle(identity.privateKeyBox, pass);
         securityPatch = {
           ...securityPatch,
