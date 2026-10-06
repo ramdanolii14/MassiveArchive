@@ -3,6 +3,7 @@ $ErrorActionPreference = "Stop"
 
 $PollSeconds = 2
 $ProjectFolderName = "MassiveArchive"
+$MarkerFileName = ".massivearchive-usb"
 $script:RunningProcess = $null
 $script:RunningProject = $null
 
@@ -11,7 +12,8 @@ function Find-MassiveArchive {
         ForEach-Object {
             $root = $_.DeviceID + "\"
             $project = Join-Path $root $ProjectFolderName
-            if ((Test-Path (Join-Path $project "package.json")) -and
+            if ((Test-Path (Join-Path $project $MarkerFileName)) -and
+                (Test-Path (Join-Path $project "package.json")) -and
                 (Test-Path (Join-Path $project "server.js"))) {
                 $project
             }
