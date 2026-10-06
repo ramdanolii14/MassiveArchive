@@ -1,6 +1,7 @@
 // CRYPTO LAYER — AES-GCM + per-user ECDH identity + envelope encryption
 
 const PBKDF2_ITERATIONS = 210000;
+export const AES_GCM_CHUNK_OVERHEAD = 28; // 12-byte IV + 16-byte GCM tag
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -168,6 +169,61 @@ export const Crypto = {
     return uint8ToB64(packed);
   },
 
+  async encryptChunkWithKey(plainBuffer, rawKey) {
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+    const key = await importRawAesKey(rawKey, ["encrypt"]);
+    const ciphertext = await window.crypto.subtle.encrypt(
+      { name: "AES-GCM", iv }, key, toArrayBuffer(plainBuffer)
+    );
+    const packed = new Uint8Array(12 + ciphertext.byteLength);
+    packed.set(iv, 0);
+    packed.set(new Uint8Array(ciphertext), 12);
+    return packed;
+  },
+
+  async decryptChunkWithKey(packedChunk, rawKey) {
+    const packed = toUint8Array(packedChunk);
+    if (packed.length < AES_GCM_CHUNK_OVERHEAD) {
+      throw new Error("Potongan data terenkripsi rusak atau terpotong.");
+    }
+    const iv = packed.slice(0, 12);
+    const ct = packed.slice(12);
+    const key = await importRawAesKey(rawKey, ["decrypt"]);
+    return window.crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ct);
+  },
+
+  async decryptChunkedWithKey(encData, rawKey, originalSize, chunkSize) {
+    const packed = toUint8Array(encData);
+    const size = Number(originalSize);
+    const plainChunkSize = Number(chunkSize) > 0
+      ? Number(chunkSize)
+      : 4 * 1024 * 1024 - AES_GCM_CHUNK_OVERHEAD;
+    if (!Number.isSafeInteger(size) || size < 0 || plainChunkSize <= 0) {
+      throw new Error("Metadata berkas terenkripsi tidak valid.");
+    }
+    if (size === 0) return new ArrayBuffer(0);
+
+    const expected = size + Math.ceil(size / plainChunkSize) * AES_GCM_CHUNK_OVERHEAD;
+    if (packed.length !== expected) {
+      throw new Error(`Data arsip rusak atau terpotong (${packed.length} dari ${expected} bytes).`);
+    }
+
+    const plain = new Uint8Array(size);
+    let plainOffset = 0;
+    let encryptedOffset = 0;
+    while (plainOffset < size) {
+      const partSize = Math.min(plainChunkSize, size - plainOffset);
+      const encSize = partSize + AES_GCM_CHUNK_OVERHEAD;
+      const dec = await this.decryptChunkWithKey(
+        packed.slice(encryptedOffset, encryptedOffset + encSize),
+        rawKey
+      );
+      plain.set(new Uint8Array(dec), plainOffset);
+      plainOffset += partSize;
+      encryptedOffset += encSize;
+    }
+    return plain.buffer;
+  },
   async decryptWithKey(encData, rawKey) {
     const packed = toUint8Array(encData);
     if (packed.length < 29) {
