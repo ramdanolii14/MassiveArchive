@@ -88,6 +88,13 @@ function archiveShardPath(id) {
   return path.join(ARCHIVE_DIR, `archive-${String(id).padStart(8, "0")}.arsip`);
 }
 
+function isVideoFile(file) {
+  const type = String(file?.type || "").toLowerCase();
+  const ext = String(file?.name || "").split(".").pop().toLowerCase();
+  return type.startsWith("video/") || [
+    "mp4","m4v","mov","webm","ogv","ogg","mkv","avi","flv","wmv","3gp","mpeg","mpg","ts"
+  ].includes(ext);
+}
 function isProtectedMedia(file) {
   const type = String(file?.type || "").toLowerCase();
   const ext = String(file?.name || "").split(".").pop().toLowerCase();
@@ -510,11 +517,31 @@ function payloadPath(ref) {
   return full.startsWith(PAYLOAD_DIR + path.sep) ? full : null;
 }
 
+function payloadChunkPath(ref, index) {
+  const safe = String(ref || "");
+  if (!safe || safe !== path.basename(safe) || !/^[A-Za-z0-9._-]+$/.test(safe)) return null;
+  if (!Number.isInteger(index) || index < 0 || index > 1000000) return null;
+  return path.join(PAYLOAD_DIR, safe + ".chunk-" + String(index).padStart(6, "0") + ".bin");
+}
+
 function removePayload(ref) {
   const p = payloadPath(ref);
   if (p && fs.existsSync(p)) {
     try { fs.unlinkSync(p); } catch {}
   }
+}
+
+function removeFileStorage(file) {
+  if (!file?.payloadRef) return;
+  if (file.storageMode === "chunks") {
+    const count = Number(file.chunkCount) || 0;
+    for (let i = 0; i < count; i++) {
+      const p = payloadChunkPath(file.payloadRef, i);
+      if (p && fs.existsSync(p)) { try { fs.unlinkSync(p); } catch {} }
+    }
+    return;
+  }
+  removePayload(file.payloadRef);
 }
 
 function fileIdentity(f) {
@@ -547,7 +574,7 @@ function preserveExistingFilePayloads(oldArc, newArc) {
 function cleanupRemovedPayloads(oldArc, newArc) {
   const kept = new Set((newArc.files || []).map(f => f.payloadRef).filter(Boolean));
   for (const f of oldArc.files || []) {
-    if (f.payloadRef && !kept.has(f.payloadRef)) removePayload(f.payloadRef);
+    if (f.payloadRef && !kept.has(f.payloadRef)) removeFileStorage(f);
   }
 }
 
@@ -581,6 +608,43 @@ function removeUpload(uploadId) {
   }
 }
 
+function materializeVideoUpload(state, archiveId) {
+  const base = "payload-video-" + String(archiveId).padStart(8, "0") + "-" + crypto.randomBytes(8).toString("hex");
+  const source = uploadPartPath(state.uploadId);
+  const chunkCount = Math.ceil(state.size / UPLOAD_CHUNK);
+  const fd = fs.openSync(source, "r");
+  const created = [];
+  try {
+    for (let i = 0; i < chunkCount; i++) {
+      const remaining = state.size - i * UPLOAD_CHUNK;
+      const chunkLength = Math.min(UPLOAD_CHUNK, remaining);
+      const buffer = Buffer.allocUnsafe(chunkLength);
+      let offset = 0;
+      while (offset < chunkLength) {
+        const read = fs.readSync(fd, buffer, offset, chunkLength - offset, i * UPLOAD_CHUNK + offset);
+        if (!read) throw new Error("Upload video tidak lengkap.");
+        offset += read;
+      }
+      const ref = payloadChunkPath(base, i);
+      if (!ref) throw new Error("Lokasi chunk video tidak valid.");
+      fs.writeFileSync(ref, buffer);
+      created.push(ref);
+    }
+  } catch (error) {
+    for (const p of created) { try { fs.unlinkSync(p); } catch {} }
+    throw error;
+  } finally {
+    fs.closeSync(fd);
+  }
+  try { fs.unlinkSync(source); } catch {}
+  return {
+    payloadRef: base,
+    storageMode: "chunks",
+    chunkCount,
+    transportChunkSize: UPLOAD_CHUNK,
+    encryptedSize: state.size,
+  };
+}
 function materializeUploads(files, archiveId, userId) {
   const out = [];
   for (let i = 0; i < (files || []).length; i++) {
@@ -594,13 +658,19 @@ function materializeUploads(files, archiveId, userId) {
     }
     const part = uploadPartPath(state.uploadId);
     if (!fs.existsSync(part)) throw new Error("Data upload tidak ditemukan.");
+    const clean = { ...f };
+    delete clean.uploadId;
+    if (isVideoFile(f) && f.encryptionMode === "chunked-aes-gcm-v1") {
+      const stored = materializeVideoUpload(state, archiveId);
+      removeUpload(state.uploadId);
+      out.push({ ...clean, ...stored });
+      continue;
+    }
     const payloadRef = "payload-" + String(archiveId).padStart(8, "0") + "-" + crypto.randomBytes(8).toString("hex") + ".bin";
     const target = payloadPath(payloadRef);
     if (!target) throw new Error("Lokasi payload tidak valid.");
     fs.renameSync(part, target);
     removeUpload(state.uploadId);
-    const clean = { ...f };
-    delete clean.uploadId;
     out.push({ ...clean, payloadRef });
   }
   return out;
@@ -700,6 +770,44 @@ app.get("/api/archives/:id", (req, res) => {
   res.json(safeArc);
 });
 
+async function sendStoredChunks(res, file) {
+  const count = Number(file.chunkCount) || 0;
+  for (let i = 0; i < count; i++) {
+    const p = payloadChunkPath(file.payloadRef, i);
+    if (!p || !fs.existsSync(p)) throw new Error("Chunk video tidak ditemukan.");
+    const stream = fs.createReadStream(p);
+    for await (const part of stream) {
+      if (!res.write(part)) await new Promise(resolve => res.once("drain", resolve));
+    }
+  }
+}
+
+app.get("/api/archives/:id/files/:idx/chunks/:chunkIndex", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const idx = parseInt(req.params.idx, 10);
+  const chunkIndex = parseInt(req.params.chunkIndex, 10);
+  const arc = readArchive(id);
+  if (!arc) return res.status(404).json({ error: "Tidak ditemukan" });
+  if (isDeleted(arc)) return res.status(410).json({ error: "Arsip berada di Tempat Sampah." });
+
+  const username = req.user.username;
+  const keyId = req.user.keyId || "";
+  const perms = archivePermissions(arc, keyId, username);
+  if (!perms.view) return res.status(403).json({ error: "Anda tidak memiliki izin melihat berkas ini." });
+
+  const f = arc.files?.[idx];
+  if (!f || f.storageMode !== "chunks" || !isVideoFile(f)) {
+    return res.status(404).json({ error: "Chunk video tidak tersedia." });
+  }
+  if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= Number(f.chunkCount)) {
+    return res.status(416).json({ error: "Nomor chunk tidak valid." });
+  }
+  const p = payloadChunkPath(f.payloadRef, chunkIndex);
+  if (!p || !fs.existsSync(p)) return res.status(404).json({ error: "Chunk video tidak ditemukan." });
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.setHeader("Content-Length", fs.statSync(p).size);
+  fs.createReadStream(p).pipe(res);
+});
 app.get("/api/archives/:id/files/:idx", (req, res) => {
   const id = parseInt(req.params.id, 10);
   const idx = parseInt(req.params.idx, 10);
@@ -724,6 +832,9 @@ app.get("/api/archives/:id/files/:idx", (req, res) => {
 
   let payload = null;
   if (purpose === "view") {
+    if (f.storageMode === "chunks" && isVideoFile(f)) {
+      return res.status(409).json({ error: "Video ini harus diputar melalui streaming chunk." });
+    }
     if (isProtectedMedia(f)) {
       if (!f.previewData) {
         return res.status(404).json({
@@ -737,6 +848,21 @@ app.get("/api/archives/:id/files/:idx", (req, res) => {
     } else if (f.encData) {
       try { payload = Buffer.from(f.encData, "base64"); } catch {}
     }
+  } else if (f.storageMode === "chunks") {
+    const plainChunkSize = Number(f.encryptionChunkSize);
+    const encryptedSize = Number(f.encryptedSize);
+    if (!Number.isSafeInteger(plainChunkSize) || plainChunkSize <= 0 || !Number.isSafeInteger(encryptedSize) || encryptedSize < 0) {
+      return res.status(500).json({ error: "Metadata video chunk tidak valid." });
+    }
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Length", encryptedSize);
+    try {
+      await sendStoredChunks(res, f);
+    } catch (error) {
+      if (!res.headersSent) return res.status(404).json({ error: error.message });
+      res.destroy(error);
+    }
+    return;
   } else if (f.payloadRef) {
     const p = payloadPath(f.payloadRef);
     if (p && fs.existsSync(p)) payload = fs.readFileSync(p);
@@ -851,7 +977,7 @@ app.delete("/api/archives/:id/permanent", (req, res) => {
   const actor = req.user.username;
   if (current.owner !== actor) return res.status(403).json({ error: "Hanya pemilik yang dapat menghapus permanen." });
   const full = readArchive(id);
-  for (const f of full?.files || []) if (f.payloadRef) removePayload(f.payloadRef);
+  for (const f of full?.files || []) removeFileStorage(f);
   removeArchive(id);
   writeArchiveIndex(archivesMeta().filter(a => a.id !== id));
   res.json({ ok: true, permanent: true });
