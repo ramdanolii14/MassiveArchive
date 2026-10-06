@@ -50,6 +50,7 @@ export function WelcomeScreen({ onLogin }) {
           identity = {
             publicKey: user.publicKey,
             keyId: user.keyId,
+            privateKeyBox: user.privateKeyBox,
             privateKey: await Crypto.unlockIdentity(user.privateKeyBox, pass),
           };
         } else {
