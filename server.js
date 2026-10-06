@@ -497,6 +497,33 @@ function removePayload(ref) {
   }
 }
 
+function fileIdentity(f) {
+  return [
+    String(f?.name || ""),
+    String(f?.size || 0),
+    String(f?.addedAt || ""),
+  ].join("|");
+}
+
+function preserveExistingFilePayloads(oldArc, newArc) {
+  const oldByIdentity = new Map(
+    (oldArc.files || []).map(f => [fileIdentity(f), f])
+  );
+
+  newArc.files = (newArc.files || []).map(file => {
+    const oldFile = oldByIdentity.get(fileIdentity(file));
+    if (!oldFile) return file;
+
+    const next = { ...oldFile, ...file };
+    if (!file.encData && oldFile.encData) next.encData = oldFile.encData;
+    if (!file.payloadRef && oldFile.payloadRef) next.payloadRef = oldFile.payloadRef;
+    if (!file.previewData && oldFile.previewData) next.previewData = oldFile.previewData;
+    if (!file.previewType && oldFile.previewType) next.previewType = oldFile.previewType;
+    if (!file.previewSize && oldFile.previewSize) next.previewSize = oldFile.previewSize;
+    return next;
+  });
+}
+
 function cleanupRemovedPayloads(oldArc, newArc) {
   const kept = new Set((newArc.files || []).map(f => f.payloadRef).filter(Boolean));
   for (const f of oldArc.files || []) {
@@ -760,6 +787,7 @@ app.patch("/api/archives/:id", (req, res) => {
 
   const item = { ...current, ...body, id };
   if (Array.isArray(item.files)) {
+    preserveExistingFilePayloads(current, item);
     try { item.files = materializeUploads(item.files, id, req.user.id); }
     catch (e) { return res.status(400).json({ error: e.message }); }
   }
