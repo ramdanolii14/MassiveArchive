@@ -338,6 +338,28 @@ async function makeSecurePreview(file, archiveKey) {
   };
 }
 
+function isVideoSource(meta) {
+  const type = String(meta?.type || "").toLowerCase();
+  const ext = String(meta?.name || "").toLowerCase().split(".").pop();
+  return type.startsWith("video/") || [
+    "mp4","m4v","mov","webm","ogv","ogg","mkv","avi","flv","wmv","3gp","mpeg","mpg","ts"
+  ].includes(ext);
+}
+
+async function sendVideoJobChunk(jobId, offset, chunk) {
+  let currentOffset = offset;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      return await IDB.videoJobChunk(jobId, currentOffset, chunk);
+    } catch (error) {
+      const status = await IDB.videoJobStatus(jobId).catch(() => null);
+      if (!status || !Number.isInteger(status.received)) throw error;
+      currentOffset = status.received;
+      if (currentOffset >= offset + chunk.byteLength) return status;
+    }
+  }
+  throw new Error("Pengiriman data HLS tidak dapat dilanjutkan.");
+}
 export async function uploadEncryptedSource(source, archiveKey, meta, setProg) {
   const sourceBlob = source instanceof Blob ? source : new Blob([source]);
   const size = sourceBlob.size;
@@ -347,11 +369,24 @@ export async function uploadEncryptedSource(source, archiveKey, meta, setProg) {
   const plainChunkSize = transportChunkSize - AES_GCM_CHUNK_OVERHEAD;
   const chunkCount = Math.ceil(size / plainChunkSize);
   const encryptedSize = size + chunkCount * AES_GCM_CHUNK_OVERHEAD;
+
   const state = await IDB.startUpload({
     size: encryptedSize,
     name: meta.name,
     type: meta.type,
   });
+
+  const videoSource = isVideoSource(meta);
+  let hlsJob = null;
+  let hlsOffset = 0;
+
+  if (videoSource) {
+    hlsJob = await IDB.videoJobStart({
+      size,
+      name: meta.name,
+      type: meta.type,
+    });
+  }
 
   let encryptedOffset = state.received || 0;
   let plainOffset = Math.floor(encryptedOffset / transportChunkSize) * plainChunkSize;
@@ -369,9 +404,16 @@ export async function uploadEncryptedSource(source, archiveKey, meta, setProg) {
       try {
         const result = await IDB.uploadChunk(state.uploadId, encryptedOffset, encryptedChunk);
         encryptedOffset = result.received;
-        plainOffset = end;
         retries = 0;
-        setProg?.(`Mengamankan dan mengunggah ${meta.name} ${Math.round((plainOffset / size) * 100)}%`);
+
+        if (hlsJob) {
+          await sendVideoJobChunk(hlsJob.jobId, hlsOffset, plainChunk);
+          hlsOffset += plainChunk.byteLength;
+        }
+
+        plainOffset = end;
+        const suffix = hlsJob ? " + menyiapkan streaming HLS" : "";
+        setProg?.(`Mengamankan dan mengunggah ${meta.name} ${Math.round((plainOffset / size) * 100)}%${suffix}`);
       } catch (e) {
         const status = await IDB.uploadStatus(state.uploadId).catch(() => null);
         if (!status || !Number.isInteger(status.received)) throw e;
@@ -387,13 +429,24 @@ export async function uploadEncryptedSource(source, archiveKey, meta, setProg) {
       }
     }
 
+    let hlsStatus = null;
+    if (hlsJob) {
+      const finished = await IDB.videoJobFinish(hlsJob.jobId);
+      hlsStatus = finished?.status || "queued";
+    }
+
     return {
       uploadId: state.uploadId,
       encryptionMode: "chunked-aes-gcm-v1",
       encryptionChunkSize: plainChunkSize,
+      ...(hlsJob ? {
+        hlsJobId: hlsJob.jobId,
+        hlsStatus,
+      } : {}),
     };
   } catch (e) {
     await IDB.cancelUpload(state.uploadId).catch(() => {});
+    if (hlsJob) await IDB.videoJobCancel(hlsJob.jobId).catch(() => {});
     throw e;
   }
 }

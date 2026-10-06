@@ -5,6 +5,18 @@ import path     from "path";
 import crypto   from "crypto";
 import { fileURLToPath } from "url";
 import dotenv   from "dotenv";
+import {
+  createVideoHlsStore,
+  createVideoJob,
+  readVideoJob,
+  appendVideoJobChunk,
+  finishVideoJob,
+  publicVideoJob,
+  videoJobAsset,
+  getVideoJobKey,
+  removeVideoJob,
+  VIDEO_HLS_CHUNK,
+} from "./server/videoHls.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
@@ -31,6 +43,7 @@ const ARCHIVE_INDEX   = path.join(DB_DIR, "archives.index.arsip");
 const LEGACY_ARCHIVES = path.join(DB_DIR, "archives.arsip");
 const PAYLOAD_DIR     = path.join(DB_DIR, "payloads");
 const UPLOAD_DIR      = path.join(DB_DIR, "uploads");
+const VIDEO_HLS_DIR   = path.join(DB_DIR, "video-jobs");
 const MAX_FILE_SIZE   = 1024 * 1024 * 1024;
 const MAX_UPLOAD_SIZE = MAX_FILE_SIZE + 1024 * 1024;
 const UPLOAD_CHUNK    = 4 * 1024 * 1024;
@@ -39,6 +52,7 @@ if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 if (!fs.existsSync(ARCHIVE_DIR)) fs.mkdirSync(ARCHIVE_DIR, { recursive: true });
 if (!fs.existsSync(PAYLOAD_DIR)) fs.mkdirSync(PAYLOAD_DIR, { recursive: true });
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+createVideoHlsStore(VIDEO_HLS_DIR);
 
 // ════════════════════════════════════════════════════════════════
 // ENKRIPSI DISK — AES-256-GCM
@@ -572,9 +586,12 @@ function preserveExistingFilePayloads(oldArc, newArc) {
 }
 
 function cleanupRemovedPayloads(oldArc, newArc) {
-  const kept = new Set((newArc.files || []).map(f => f.payloadRef).filter(Boolean));
+  const keptPayloads = new Set((newArc.files || []).map(f => f.payloadRef).filter(Boolean));
+  const keptHlsJobs = new Set((newArc.files || []).map(f => f.hlsJobId).filter(Boolean));
+
   for (const f of oldArc.files || []) {
-    if (f.payloadRef && !kept.has(f.payloadRef)) removeFileStorage(f);
+    if (f.payloadRef && !keptPayloads.has(f.payloadRef)) removeFileStorage(f);
+    if (f.hlsJobId && !keptHlsJobs.has(f.hlsJobId)) removeVideoJob(VIDEO_HLS_DIR, f.hlsJobId);
   }
 }
 
@@ -676,6 +693,132 @@ function materializeUploads(files, archiveId, userId) {
   return out;
 }
 
+function videoJobArchive(jobId) {
+  const index = archivesMeta();
+  for (let i = 0; i < index.length; i++) {
+    const files = index[i].files || [];
+    const fileIndex = files.findIndex(f => f?.hlsJobId === jobId);
+    if (fileIndex >= 0) return { archive: index[i], fileIndex, file: files[fileIndex] };
+  }
+  return null;
+}
+
+function canAccessVideoJob(req, state, jobId) {
+  if (state?.userId === req.user.id) return true;
+  const found = videoJobArchive(jobId);
+  if (!found || isDeleted(found.archive)) return false;
+  const perms = archivePermissions(found.archive, req.user.keyId || "", req.user.username);
+  return Boolean(perms.view);
+}
+
+app.post("/api/video-jobs", (req, res) => {
+  const size = Number(req.body?.size);
+  if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_FILE_SIZE) {
+    return res.status(400).json({ error: "Ukuran video tidak valid atau melebihi 1 GB." });
+  }
+  try {
+    const job = createVideoJob(VIDEO_HLS_DIR, {
+      userId: req.user.id,
+      name: req.body?.name,
+      type: req.body?.type,
+      size,
+    });
+    res.json({ ...publicVideoJob(job), chunkSize: VIDEO_HLS_CHUNK });
+  } catch (e) {
+    res.status(503).json({ error: e.message });
+  }
+});
+
+app.get("/api/video-jobs/:id", (req, res) => {
+  const state = readVideoJob(VIDEO_HLS_DIR, req.params.id);
+  if (!state) return res.status(404).json({ error: "Proses video tidak ditemukan." });
+  if (!canAccessVideoJob(req, state, req.params.id)) return res.status(403).json({ error: "Anda tidak memiliki akses ke proses video ini." });
+  res.json(publicVideoJob(state));
+});
+
+app.put("/api/video-jobs/:id/chunks",
+  express.raw({ type: "application/octet-stream", limit: "5mb" }),
+  (req, res) => {
+    const state = readVideoJob(VIDEO_HLS_DIR, req.params.id);
+    if (!state) return res.status(404).json({ error: "Proses video tidak ditemukan." });
+    if (state.userId !== req.user.id) return res.status(403).json({ error: "Proses video bukan milik sesi ini." });
+    const offset = Number(req.get("X-Video-Offset"));
+    try {
+      const next = appendVideoJobChunk(VIDEO_HLS_DIR, req.params.id, offset, req.body);
+      res.json(publicVideoJob(next));
+    } catch (e) {
+      res.status(e.status || 400).json({ error: e.message, received: e.received });
+    }
+  }
+);
+
+app.post("/api/video-jobs/:id/finish", (req, res) => {
+  const state = readVideoJob(VIDEO_HLS_DIR, req.params.id);
+  if (!state) return res.status(404).json({ error: "Proses video tidak ditemukan." });
+  if (state.userId !== req.user.id) return res.status(403).json({ error: "Proses video bukan milik sesi ini." });
+  try {
+    res.json(publicVideoJob(finishVideoJob(VIDEO_HLS_DIR, req.params.id)));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete("/api/video-jobs/:id", (req, res) => {
+  const state = readVideoJob(VIDEO_HLS_DIR, req.params.id);
+  if (!state) return res.json({ ok: true });
+  if (state.userId !== req.user.id) return res.status(403).json({ error: "Proses video bukan milik sesi ini." });
+  removeVideoJob(VIDEO_HLS_DIR, req.params.id);
+  res.json({ ok: true });
+});
+
+app.get("/api/video-stream/jobs/:id/key", (req, res) => {
+  const state = readVideoJob(VIDEO_HLS_DIR, req.params.id);
+  if (!state || state.status !== "ready") return res.status(404).end();
+  if (!canAccessVideoJob(req, state, req.params.id)) return res.status(403).end();
+  const key = getVideoJobKey(VIDEO_HLS_DIR, req.params.id);
+  if (!key) return res.status(404).end();
+  res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("Content-Type", "application/octet-stream");
+  res.send(key);
+});
+
+app.get("/api/video-stream/jobs/:id/master.m3u8", (req, res) => {
+  const state = readVideoJob(VIDEO_HLS_DIR, req.params.id);
+  if (!state || state.status !== "ready") return res.status(404).end();
+  if (!canAccessVideoJob(req, state, req.params.id)) return res.status(403).end();
+  const p = videoJobAsset(VIDEO_HLS_DIR, req.params.id, "master.m3u8");
+  if (!p || !fs.existsSync(p)) return res.status(404).end();
+  res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+  fs.createReadStream(p).pipe(res);
+});
+
+app.get("/api/video-stream/jobs/:id/v:variant/index.m3u8", (req, res) => {
+  const state = readVideoJob(VIDEO_HLS_DIR, req.params.id);
+  if (!state || state.status !== "ready") return res.status(404).end();
+  if (!canAccessVideoJob(req, state, req.params.id)) return res.status(403).end();
+  const variant = Number(req.params.variant);
+  if (!Number.isInteger(variant) || variant < 0 || variant >= (state.variants || []).length) return res.status(404).end();
+  const p = videoJobAsset(VIDEO_HLS_DIR, req.params.id, "v" + variant + "/index.m3u8");
+  if (!p || !fs.existsSync(p)) return res.status(404).end();
+  res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+  fs.createReadStream(p).pipe(res);
+});
+
+app.get("/api/video-stream/jobs/:id/v:variant/:segment", (req, res) => {
+  const state = readVideoJob(VIDEO_HLS_DIR, req.params.id);
+  if (!state || state.status !== "ready") return res.status(404).end();
+  if (!canAccessVideoJob(req, state, req.params.id)) return res.status(403).end();
+  const variant = Number(req.params.variant);
+  const segment = req.params.segment;
+  if (!Number.isInteger(variant) || variant < 0 || variant >= (state.variants || []).length || !/^seg\\d{5}\\.ts$/.test(segment)) return res.status(404).end();
+  const p = videoJobAsset(VIDEO_HLS_DIR, req.params.id, "v" + variant + "/" + segment);
+  if (!p || !fs.existsSync(p)) return res.status(404).end();
+  res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("Content-Type", "video/mp2t");
+  fs.createReadStream(p).pipe(res);
+});
 app.post("/api/uploads", (req, res) => {
   const size = Number(req.body?.size);
   if (!Number.isFinite(size) || size < 0 || size > MAX_UPLOAD_SIZE) {
@@ -977,7 +1120,10 @@ app.delete("/api/archives/:id/permanent", (req, res) => {
   const actor = req.user.username;
   if (current.owner !== actor) return res.status(403).json({ error: "Hanya pemilik yang dapat menghapus permanen." });
   const full = readArchive(id);
-  for (const f of full?.files || []) removeFileStorage(f);
+  for (const f of full?.files || []) {
+    removeFileStorage(f);
+    if (f.hlsJobId) removeVideoJob(VIDEO_HLS_DIR, f.hlsJobId);
+  }
   removeArchive(id);
   writeArchiveIndex(archivesMeta().filter(a => a.id !== id));
   res.json({ ok: true, permanent: true });

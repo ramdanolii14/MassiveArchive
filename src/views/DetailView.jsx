@@ -498,7 +498,21 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
                   archiveId={arc.id}
                   fileIndex={prev.idx}
                   archiveKey={prev.archiveKey}
-                  onError={error => toast(error.message || "Streaming video gagal.", "err")}
+                  canEdit={isOwner}
+                  onJobReady={async jobId => {
+                    if (!isOwner || prev.file.hlsJobId === jobId) return;
+                    const nextFiles = (arc.files || []).map((item, index) =>
+                      index === prev.idx
+                        ? { ...item, hlsJobId: jobId, hlsStatus: "processing" }
+                        : item
+                    );
+                    await IDB.update(arc.id, {
+                      files: nextFiles,
+                      updatedAt: new Date().toISOString(),
+                    });
+                    await reload();
+                  }}
+                  onError={error => toast(error.message || "Streaming HLS gagal.", "err")}
                 />
               )}
               {prev.kind === "video" && !prev.videoStream && (
