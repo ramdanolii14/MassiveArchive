@@ -74,20 +74,35 @@ export function WelcomeScreen({ onLogin }) {
         if (!identity.privateKeyBox) {
           throw new Error("Kunci keamanan akun belum tersedia.");
         }
-        const recovery = await Crypto.createRecoveryBundle(identity.privateKeyBox, pass);
-        securityPatch = {
-          ...securityPatch,
+
+        const recovery = await Crypto.createRecoveryBundle(
+          identity.privateKeyBox,
+          pass
+        );
+
+        const bootstrap = await IDB.bootstrapSecurity({
+          publicKey: identity.publicKey,
+          keyId: identity.keyId,
+          privateKeyBox: identity.privateKeyBox,
           recoveryHash: recovery.recoveryHash,
           recoveryKeyBox: recovery.recoveryKeyBox,
-        };
-        await IDB.updateUser(user.username, securityPatch);
+        });
+
         setRecoveryNotice(recovery.recoveryKey);
-        setPendingSession(sessionFromUser(user, pass, identity.privateKey));
-      } else if (Object.keys(securityPatch).length) {
-        await IDB.updateUser(user.username, securityPatch);
-        onLogin(sessionFromUser(user, pass, identity.privateKey));
+        setPendingSession(sessionFromUser(
+          { ...user, ...bootstrap, hasRecovery: true },
+          pass,
+          identity.privateKey
+        ));
       } else {
-        onLogin(sessionFromUser(user, pass, identity.privateKey));
+        if (Object.keys(securityPatch).length) {
+          await IDB.updateUser(user.username, securityPatch);
+        }
+        onLogin(sessionFromUser(
+          { ...user, ...securityPatch },
+          pass,
+          identity.privateKey
+        ));
       }
     } catch (e) {
       setErr(e.message || "Username atau kata kunci salah.");
@@ -219,7 +234,7 @@ export function WelcomeScreen({ onLogin }) {
         <div className="auth-card">
           <div className="auth-title">Simpan Recovery Key</div>
           <div className="auth-sub">
-            Recovery Key diperlukan untuk memulihkan akun ketika kata kunci lupa.
+            Akun lama Anda sudah berhasil dilengkapi fitur pemulihan. Data dan arsip lama tetap dipertahankan.
           </div>
           <div className="recovery-key">{recoveryNotice}</div>
           <div className="note" style={{ marginTop: 16 }}>
