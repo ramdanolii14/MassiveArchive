@@ -1,8 +1,8 @@
 import { useState, useEffect } from "react";
 import { IDB }    from "../database.js";
-import { Crypto, toUint8Array } from "../crypto.js";
+import { Crypto } from "../crypto.js";
 import { fmtSize, fmtDT, fileTypeLabel, fileExtension } from "../utils.js";
-import { EditForm } from "./ArchiveViews.jsx";
+import { EditForm, uploadEncryptedSource } from "./ArchiveViews.jsx";
 import { Avatar } from "../components/Avatar.jsx";
 import { OfficePreview } from "../components/OfficePreview.jsx";
 import { logAudit } from "../audit.js";
@@ -14,36 +14,6 @@ const defaultSharedPermissions = {
   edit: false,
   reshare: false,
 };
-
-async function uploadEncryptedPayload(encData, meta, setProg) {
-  const bytes = toUint8Array(encData);
-  const state = await IDB.startUpload({
-    size: bytes.byteLength,
-    name: meta.name,
-    type: meta.type,
-  });
-
-  let offset = state.received || 0;
-  try {
-    while (offset < bytes.byteLength) {
-      const end = Math.min(
-        offset + (state.chunkSize || 4 * 1024 * 1024),
-        bytes.byteLength
-      );
-      const result = await IDB.uploadChunk(
-        state.uploadId,
-        offset,
-        bytes.slice(offset, end)
-      );
-      offset = result.received;
-      setProg?.(`Menyiapkan ulang ${meta.name} ${Math.round((offset / bytes.byteLength) * 100)}%`);
-    }
-    return state.uploadId;
-  } catch (e) {
-    await IDB.cancelUpload(state.uploadId).catch(() => {});
-    throw e;
-  }
-}
 
 async function rotateAfterRevoke(current, revokedUsername, session, users, setProg) {
   if (current.owner !== session.username) {
@@ -90,7 +60,9 @@ async function rotateAfterRevoke(current, revokedUsername, session, users, setPr
         session.identityPrivateKey
       );
       const oldCipher = await IDB.fileData(current.id, i, session, "download");
-      plain = await Crypto.decryptWithKey(oldCipher, oldArchiveKey);
+      plain = oldFile.encryptionMode === "chunked-aes-gcm-v1"
+        ? await Crypto.decryptChunkedWithKey(oldCipher, oldArchiveKey, oldFile.size, oldFile.encryptionChunkSize)
+        : await Crypto.decryptWithKey(oldCipher, oldArchiveKey);
     } else if (oldFile.encData) {
       plain = await Crypto.decrypt(oldFile.encData, session.passphrase);
     } else {
@@ -98,17 +70,21 @@ async function rotateAfterRevoke(current, revokedUsername, session, users, setPr
       plain = await Crypto.decrypt(oldCipher, session.passphrase);
     }
 
-    const encData = await Crypto.encryptWithKey(plain, archiveKey);
-    const uploadId = await uploadEncryptedPayload(encData, oldFile, setProg);
+    const uploaded = await uploadEncryptedSource(
+      new Blob([plain], { type: oldFile.type || "application/octet-stream" }),
+      archiveKey,
+      oldFile,
+      setProg
+    );
     const nextFile = {
       name: oldFile.name,
       type: oldFile.type,
       size: oldFile.size,
       addedAt: oldFile.addedAt || new Date().toISOString(),
-      uploadId,
+      ...uploaded,
     };
 
-    if (previewKind(oldFile)) {
+    if (previewKind(oldFile) && oldFile.size <= 50 * 1024 * 1024) {
       const preview = await createSecurePreview(plain, oldFile);
       if (preview?.blob) {
         nextFile.previewData = await Crypto.encryptWithKey(
@@ -216,7 +192,9 @@ export function DetailView({ recId, session, userAvatars, onBack, onDelete, toas
           envelope.wrappedKey,
           session.identityPrivateKey
         );
-        plain = await Crypto.decryptWithKey(encData, archiveKey);
+        plain = file.encryptionMode === "chunked-aes-gcm-v1"
+          ? await Crypto.decryptChunkedWithKey(encData, archiveKey, file.size, file.encryptionChunkSize)
+          : await Crypto.decryptWithKey(encData, archiveKey);
       } else {
         plain = await Crypto.decrypt(encData, session.passphrase);
       }

@@ -1,12 +1,14 @@
 import { useState, useRef, useEffect } from "react";
-import { Crypto, toUint8Array } from "../crypto.js";
+import { Crypto, AES_GCM_CHUNK_OVERHEAD } from "../crypto.js";
 import { IDB }    from "../database.js";
 import { fmtSize, CATS, STATUSES, fileTypeLabel } from "../utils.js";
 import { Avatar }          from "../components/Avatar.jsx";
 import { StorageCapsule }  from "../components/StorageCapsule.jsx";
 import { createSecurePreview, previewKind } from "../securePreview.js";
 
-const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200 MB per berkas
+const MAX_FILE_SIZE = 1024 * 1024 * 1024; // 1 GB per berkas
+const TRANSPORT_CHUNK_SIZE = 4 * 1024 * 1024;
+const PREVIEW_MAX_SIZE = 50 * 1024 * 1024; // Media besar tidak diproses preview saat upload
 
 function Empty({ title, text, action }) {
   return (
@@ -291,12 +293,12 @@ async function readFileList(fl) {
       name: file.name,
       type: file.type || "application/octet-stream",
       size: file.size,
-      data: await file.arrayBuffer(),
+      source: file,
       addedAt: new Date().toISOString(),
     });
   }
   if (rejected.length) {
-    alert("Melebihi batas 200 MB per berkas:\n\n" + rejected.join("\n"));
+    alert("Melebihi batas 1 GB per berkas:\n\n" + rejected.join("\n"));
   }
   return ok;
 }
@@ -304,8 +306,12 @@ async function readFileList(fl) {
 async function encryptLegacyFiles(list, passphrase, setProg) {
   const out = [];
   for (let i = 0; i < list.length; i++) {
+    if (list[i].size > PREVIEW_MAX_SIZE) {
+      throw new Error("Berkas di atas 50 MB tidak dapat ditambahkan ke arsip lama. Buat arsip baru agar upload tetap hemat memori.");
+    }
     setProg(`Mengenkripsi ${i + 1}/${list.length}`);
-    const encData = await Crypto.encrypt(list[i].data, passphrase);
+    const plain = await list[i].source.arrayBuffer();
+    const encData = await Crypto.encrypt(plain, passphrase);
     out.push({
       name: list[i].name, type: list[i].type, size: list[i].size,
       encData, addedAt: list[i].addedAt,
@@ -317,9 +323,9 @@ async function encryptLegacyFiles(list, passphrase, setProg) {
 
 async function makeSecurePreview(file, archiveKey) {
   const kind = previewKind(file);
-  if (!kind) return {};
+  if (!kind || file.size > PREVIEW_MAX_SIZE || !file.source) return {};
 
-  const preview = await createSecurePreview(file.data, file);
+  const preview = await createSecurePreview(file.source, file);
   if (!preview?.blob) return {};
 
   return {
@@ -332,36 +338,60 @@ async function makeSecurePreview(file, archiveKey) {
   };
 }
 
-async function uploadEncryptedPayload(encData, meta, setProg) {
-  const bytes = toUint8Array(encData);
+export async function uploadEncryptedSource(source, archiveKey, meta, setProg) {
+  const sourceBlob = source instanceof Blob ? source : new Blob([source]);
+  const size = sourceBlob.size;
+  if (!size) throw new Error("Berkas kosong tidak dapat diunggah.");
+
+  const transportChunkSize = TRANSPORT_CHUNK_SIZE;
+  const plainChunkSize = transportChunkSize - AES_GCM_CHUNK_OVERHEAD;
+  const chunkCount = Math.ceil(size / plainChunkSize);
+  const encryptedSize = size + chunkCount * AES_GCM_CHUNK_OVERHEAD;
   const state = await IDB.startUpload({
-    size: bytes.byteLength,
+    size: encryptedSize,
     name: meta.name,
     type: meta.type,
   });
 
-  let offset = state.received || 0;
+  let encryptedOffset = state.received || 0;
+  let plainOffset = Math.floor(encryptedOffset / transportChunkSize) * plainChunkSize;
+  if (encryptedOffset % transportChunkSize !== 0 && encryptedOffset !== encryptedSize) {
+    throw new Error("Status upload tidak dapat dilanjutkan karena offset tidak valid.");
+  }
+
   let retries = 0;
   try {
-    while (offset < bytes.byteLength) {
-      const end = Math.min(offset + (state.chunkSize || 4 * 1024 * 1024), bytes.byteLength);
-      const chunk = bytes.slice(offset, end);
+    while (plainOffset < size) {
+      const end = Math.min(plainOffset + plainChunkSize, size);
+      const plainChunk = await sourceBlob.slice(plainOffset, end).arrayBuffer();
+      const encryptedChunk = await Crypto.encryptChunkWithKey(plainChunk, archiveKey);
+
       try {
-        const result = await IDB.uploadChunk(state.uploadId, offset, chunk);
-        offset = result.received;
+        const result = await IDB.uploadChunk(state.uploadId, encryptedOffset, encryptedChunk);
+        encryptedOffset = result.received;
+        plainOffset = end;
         retries = 0;
-        setProg(`Mengunggah ${meta.name} ${Math.round((offset / bytes.byteLength) * 100)}%`);
+        setProg?.(`Mengamankan dan mengunggah ${meta.name} ${Math.round((plainOffset / size) * 100)}%`);
       } catch (e) {
         const status = await IDB.uploadStatus(state.uploadId).catch(() => null);
-        if (status && Number.isInteger(status.received)) {
-          offset = status.received;
+        if (!status || !Number.isInteger(status.received)) throw e;
+        encryptedOffset = status.received;
+        if (encryptedOffset === encryptedSize) {
+          plainOffset = size;
+        } else if (encryptedOffset % transportChunkSize === 0) {
+          plainOffset = Math.floor(encryptedOffset / transportChunkSize) * plainChunkSize;
         } else {
           throw e;
         }
         if (++retries > 3) throw e;
       }
     }
-    return state.uploadId;
+
+    return {
+      uploadId: state.uploadId,
+      encryptionMode: "chunked-aes-gcm-v1",
+      encryptionChunkSize: plainChunkSize,
+    };
   } catch (e) {
     await IDB.cancelUpload(state.uploadId).catch(() => {});
     throw e;
@@ -378,16 +408,15 @@ async function createSecureArchiveFiles(list, session, setProg) {
   const wrappedKey = await Crypto.wrapKey(archiveKey, session.publicKey);
   const files = [];
   for (let i = 0; i < list.length; i++) {
-    setProg(`Mengenkripsi ${i + 1}/${list.length}`);
-    const encData = await Crypto.encryptWithKey(list[i].data, archiveKey);
+    setProg(`Menyimpan ${i + 1}/${list.length}`);
+    const uploaded = await uploadEncryptedSource(list[i].source, archiveKey, list[i], setProg);
     const securePreview = await makeSecurePreview(list[i], archiveKey);
-    const uploadId = await uploadEncryptedPayload(encData, list[i], setProg);
     files.push({
       name: list[i].name,
       type: list[i].type,
       size: list[i].size,
       addedAt: list[i].addedAt,
-      uploadId,
+      ...uploaded,
       ...securePreview,
     });
   }
@@ -535,16 +564,15 @@ export function EditForm({ session, arcId, onSave, onCancel }) {
         if (arc.keyMode === "envelope-v1") {
           const archiveKey = await unlockArchiveKey(arc, session);
           for (let i = 0; i < newFiles.length; i++) {
-            setEncProg(`Mengenkripsi ${i + 1}/${newFiles.length}`);
-            const encData = await Crypto.encryptWithKey(newFiles[i].data, archiveKey);
+            setEncProg(`Menyimpan ${i + 1}/${newFiles.length}`);
+            const uploaded = await uploadEncryptedSource(newFiles[i].source, archiveKey, newFiles[i], setEncProg);
             const securePreview = await makeSecurePreview(newFiles[i], archiveKey);
-            const uploadId = await uploadEncryptedPayload(encData, newFiles[i], setEncProg);
             encNew.push({
               name: newFiles[i].name,
               type: newFiles[i].type,
               size: newFiles[i].size,
               addedAt: newFiles[i].addedAt,
-              uploadId,
+              ...uploaded,
               ...securePreview,
             });
           }
