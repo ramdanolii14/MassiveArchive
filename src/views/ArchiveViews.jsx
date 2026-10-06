@@ -4,6 +4,7 @@ import { IDB }    from "../database.js";
 import { fmtSize, CATS, STATUSES, fileTypeLabel } from "../utils.js";
 import { Avatar }          from "../components/Avatar.jsx";
 import { StorageCapsule }  from "../components/StorageCapsule.jsx";
+import { createSecurePreview, previewKind } from "../securePreview.js";
 
 const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200 MB per berkas
 
@@ -314,6 +315,23 @@ async function encryptLegacyFiles(list, passphrase, setProg) {
   return out;
 }
 
+async function makeSecurePreview(file, archiveKey) {
+  const kind = previewKind(file);
+  if (!kind) return {};
+
+  const preview = await createSecurePreview(file.data, file);
+  if (!preview?.blob) return {};
+
+  return {
+    previewData: await Crypto.encryptWithKey(
+      await preview.blob.arrayBuffer(),
+      archiveKey
+    ),
+    previewType: preview.type,
+    previewSize: preview.size,
+  };
+}
+
 async function uploadEncryptedPayload(encData, meta, setProg) {
   const bytes = toUint8Array(encData);
   const state = await IDB.startUpload({
@@ -362,6 +380,7 @@ async function createSecureArchiveFiles(list, session, setProg) {
   for (let i = 0; i < list.length; i++) {
     setProg(`Mengenkripsi ${i + 1}/${list.length}`);
     const encData = await Crypto.encryptWithKey(list[i].data, archiveKey);
+    const securePreview = await makeSecurePreview(list[i], archiveKey);
     const uploadId = await uploadEncryptedPayload(encData, list[i], setProg);
     files.push({
       name: list[i].name,
@@ -369,6 +388,7 @@ async function createSecureArchiveFiles(list, session, setProg) {
       size: list[i].size,
       addedAt: list[i].addedAt,
       uploadId,
+      ...securePreview,
     });
   }
   setProg("");
@@ -517,6 +537,7 @@ export function EditForm({ session, arcId, onSave, onCancel }) {
           for (let i = 0; i < newFiles.length; i++) {
             setEncProg(`Mengenkripsi ${i + 1}/${newFiles.length}`);
             const encData = await Crypto.encryptWithKey(newFiles[i].data, archiveKey);
+            const securePreview = await makeSecurePreview(newFiles[i], archiveKey);
             const uploadId = await uploadEncryptedPayload(encData, newFiles[i], setEncProg);
             encNew.push({
               name: newFiles[i].name,
@@ -524,6 +545,7 @@ export function EditForm({ session, arcId, onSave, onCancel }) {
               size: newFiles[i].size,
               addedAt: newFiles[i].addedAt,
               uploadId,
+              ...securePreview,
             });
           }
         } else {

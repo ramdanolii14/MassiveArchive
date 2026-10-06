@@ -88,10 +88,33 @@ function archiveShardPath(id) {
   return path.join(ARCHIVE_DIR, `archive-${String(id).padStart(8, "0")}.arsip`);
 }
 
+function isProtectedMedia(file) {
+  const type = String(file?.type || "").toLowerCase();
+  const ext = String(file?.name || "").split(".").pop().toLowerCase();
+  return type.startsWith("image/") || type.startsWith("video/") ||
+    ["jpg","jpeg","png","webp","gif","bmp","avif","svg",
+      "mp4","webm","ogv","ogg","mov","m4v","mkv","avi","flv",
+      "wmv","3gp","mpeg","mpg","ts"].includes(ext);
+}
+
+function safeArchiveForClient(arc) {
+  if (!arc) return null;
+  return {
+    ...arc,
+    files: (arc.files || []).map(({ encData, payloadRef, previewData, ...f }) => ({
+      ...f,
+      hasPreview: Boolean(previewData),
+    })),
+  };
+}
+
 function archiveMetaOf(arc) {
   return {
     ...arc,
-    files: (arc.files || []).map(({ encData, ...f }) => f),
+    files: (arc.files || []).map(({ encData, payloadRef, previewData, ...f }) => ({
+      ...f,
+      hasPreview: Boolean(previewData),
+    })),
   };
 }
 
@@ -494,6 +517,33 @@ function removePayload(ref) {
   }
 }
 
+function fileIdentity(f) {
+  return [
+    String(f?.name || ""),
+    String(f?.size || 0),
+    String(f?.addedAt || ""),
+  ].join("|");
+}
+
+function preserveExistingFilePayloads(oldArc, newArc) {
+  const oldByIdentity = new Map(
+    (oldArc.files || []).map(f => [fileIdentity(f), f])
+  );
+
+  newArc.files = (newArc.files || []).map(file => {
+    const oldFile = oldByIdentity.get(fileIdentity(file));
+    if (!oldFile) return file;
+
+    const next = { ...oldFile, ...file };
+    if (!file.encData && oldFile.encData) next.encData = oldFile.encData;
+    if (!file.payloadRef && oldFile.payloadRef) next.payloadRef = oldFile.payloadRef;
+    if (!file.previewData && oldFile.previewData) next.previewData = oldFile.previewData;
+    if (!file.previewType && oldFile.previewType) next.previewType = oldFile.previewType;
+    if (!file.previewSize && oldFile.previewSize) next.previewSize = oldFile.previewSize;
+    return next;
+  });
+}
+
 function cleanupRemovedPayloads(oldArc, newArc) {
   const kept = new Set((newArc.files || []).map(f => f.payloadRef).filter(Boolean));
   for (const f of oldArc.files || []) {
@@ -630,7 +680,7 @@ app.get("/api/archives", (req, res) => {
   const accessible = index.filter(a =>
     a.owner === req.user.username || (a.sharedWith || []).includes(req.user.username)
   );
-  res.json(accessible.map(a => readArchive(a.id)).filter(Boolean));
+  res.json(accessible.map(a => safeArchiveForClient(readArchive(a.id))).filter(Boolean));
 });
 
 app.get("/api/archives/:id", (req, res) => {
@@ -645,7 +695,9 @@ app.get("/api/archives/:id", (req, res) => {
   if (!canReadArchive(arc, keyId, username)) {
     return res.status(403).json({ error: "Anda tidak memiliki akses untuk membuka arsip ini." });
   }
-  res.json(arc);
+
+  const safeArc = safeArchiveForClient(arc);
+  res.json(safeArc);
 });
 
 app.get("/api/archives/:id/files/:idx", (req, res) => {
@@ -669,13 +721,29 @@ app.get("/api/archives/:id/files/:idx", (req, res) => {
 
   const f = arc.files?.[idx];
   if (!f) return res.status(404).json({ error: "Tidak ditemukan" });
+
   let payload = null;
-  if (f.payloadRef) {
+  if (purpose === "view") {
+    if (isProtectedMedia(f)) {
+      if (!f.previewData) {
+        return res.status(404).json({
+          error: "Preview aman untuk berkas ini belum tersedia."
+        });
+      }
+      try { payload = Buffer.from(f.previewData, "base64"); } catch {}
+    } else if (f.payloadRef) {
+      const p = payloadPath(f.payloadRef);
+      if (p && fs.existsSync(p)) payload = fs.readFileSync(p);
+    } else if (f.encData) {
+      try { payload = Buffer.from(f.encData, "base64"); } catch {}
+    }
+  } else if (f.payloadRef) {
     const p = payloadPath(f.payloadRef);
     if (p && fs.existsSync(p)) payload = fs.readFileSync(p);
   } else if (f.encData) {
     try { payload = Buffer.from(f.encData, "base64"); } catch {}
   }
+
   if (!payload) return res.status(404).json({ error: "Data berkas tidak ditemukan" });
   res.setHeader("Content-Type", "application/octet-stream");
   res.setHeader("Content-Length", payload.length);
@@ -738,6 +806,7 @@ app.patch("/api/archives/:id", (req, res) => {
 
   const item = { ...current, ...body, id };
   if (Array.isArray(item.files)) {
+    preserveExistingFilePayloads(current, item);
     try { item.files = materializeUploads(item.files, id, req.user.id); }
     catch (e) { return res.status(400).json({ error: e.message }); }
   }
