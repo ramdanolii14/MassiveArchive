@@ -259,7 +259,7 @@ async function transcodeToHls(root, jobId) {
   );
 
   const splitLabels = variants.map((_, i) => "[src" + i + "]").join("");
-  const filters = ["[0:v]split=" + variants.length + splitLabels + ";"];
+  const filters = ["[0:v]split=" + variants.length + splitLabels];
 
   variants.forEach((height, i) => {
     filters.push(
