@@ -161,6 +161,13 @@ export function VideoStreamPreview({
       try {
         let jobId = file.hlsJobId;
 
+        if (jobId) {
+          const existing = await IDB.videoJobStatus(jobId).catch(() => null);
+          if (!existing || existing.status === "failed") {
+            jobId = null;
+          }
+        }
+
         if (!jobId) {
           if (!archiveKey) {
             throw new Error("Kunci arsip tidak tersedia untuk menyiapkan HLS.");
